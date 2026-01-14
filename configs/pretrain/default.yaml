@@ -1,0 +1,60 @@
+task: pretrain
+
+model:
+  # model_name_or_path: Qwen/Qwen2.5-1.5B-Instruct
+  model_name_or_path: cache/qwen25
+  use_flash_attn_2: false
+  xrag_token: "[XRAG]"
+  freeze_llm: true
+
+retriever:
+  # retriever_name_or_path: Qwen/Qwen3-Embedding-0.6B
+  retriever_name_or_path: cache/retriever/retriever
+  freeze_retriever: true
+  max_length: 180
+
+projector:
+  hidden_dim: 1024
+  dropout: 0.0
+
+data:
+  train_file: cache/finewiki_train.jsonl
+  dev_file: cache/finewiki_dev.jsonl
+  max_train_samples: null
+  preprocessing_num_workers: 24
+  overwrite_cache: false
+  max_seq_length: 336
+  retrieval_embed_length: 1
+  retriever_text_source: text
+  use_summary_as_document: false
+
+
+train:
+  seed: 1234
+  output_dir: ./runs/xrag_default
+  per_device_train_batch_size: 32
+  per_device_eval_batch_size: 32
+
+  learning_rate: 0.006
+  weight_decay: 0.0
+  warmup_ratio: 0.03
+  lr_scheduler_type: linear
+  num_train_epochs: 1
+  max_train_steps: 2000
+
+  clip_grad_norm: 1.0
+  checkpoint_every_steps: 500
+  eval_every_steps: 200
+
+objective:
+  alpha_nll: 1.0
+
+logging:
+  backends: ["console"]
+  project_name: projected_token
+  run_name: xrag_default
+  log_every_steps: 20
+
+distributed:
+  mixed_precision: bf16
+  gradient_accumulation_steps: 2
