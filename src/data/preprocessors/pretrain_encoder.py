@@ -1,7 +1,9 @@
 from __future__ import annotations
-from typing import Any, Dict, List
+from typing import Any, Dict
 import random
 import torch
+import math
+
 
 
 XRAG_TOKEN = "[XRAG]"
@@ -32,52 +34,48 @@ def _pick_text(example: Dict[str, Any], prefer_summary: bool) -> str:
             return example[k]
     raise KeyError(f"Can't find article text in keys={list(example.keys())}")
 
+def _sample_span_len(min_len: int, max_len: int, strategy: str, rng: random.Random) -> int:
+    if min_len <= 0 or max_len <= 0 or min_len > max_len:
+        raise ValueError(f"bad span lens: min_len={min_len} max_len={max_len}")
+    if strategy == "uniform":
+        return rng.randint(min_len, max_len)
+    if strategy == "log_uniform":
+        a, b = math.log(min_len), math.log(max_len)
+        return int(round(math.exp(rng.uniform(a, b))))
+    raise ValueError(f"unknown strategy={strategy}")
 
-def _encode_chat_format(
-    messages: List[Dict[str, str]],
-    tokenizer,
-    max_seq_length: int,
-) -> Dict[str, torch.Tensor]:
-    """
-    Model-agnostic chat encoding using tokenizer.apply_chat_template().
+def crop_text_by_retriever_tokens(
+    text: str,
+    retriever_tokenizer,
+    *,
+    min_len: int,
+    max_len: int,
+    strategy: str = "log_uniform",
+    rng: random.Random,
+) -> str:
+    # tokenize without adding special tokens so "length" really means content tokens
+    ids = retriever_tokenizer(text, add_special_tokens=False)["input_ids"]
+    n = len(ids)
+    if n == 0:
+        return ""
+    if n <= min_len:
+        return text
 
-    Returns:
-      - input_ids: 1D LongTensor
-      - labels:    1D LongTensor, with non-assistant tokens masked to -100
-    """
-    # Full conversation tokens
-    full_ids = tokenizer.apply_chat_template(
-        messages,
-        tokenize=True,
-        add_generation_prompt=False,
-        truncation=True,
-        max_length=max_seq_length,
-    )  # chat template API [web:302]
+    L = min(_sample_span_len(min_len, max_len, strategy, rng), n)
+    start = rng.randint(0, n - L)
+    span_ids = ids[start : start + L]
 
-    # Compute boundary: everything before assistant content should be masked.
-    # We do it by encoding the same conversation but with empty assistant content + add_generation_prompt=True,
-    # so it includes the assistant prefix but no assistant text.
-    prompt_only = [messages[0], {"role": "assistant", "content": ""}]
-    prompt_ids = tokenizer.apply_chat_template(
-        prompt_only,
-        tokenize=True,
-        add_generation_prompt=True,
-        truncation=True,
-        max_length=max_seq_length,
-    )  # add_generation_prompt behavior [web:314]
-
-    cutoff = min(len(prompt_ids), len(full_ids))
-
-    input_ids = torch.tensor(full_ids, dtype=torch.long)
-    labels = input_ids.clone()
-    labels[:cutoff] = -100
-    return {"input_ids": input_ids, "labels": labels}
+    # decode the cropped token span back to text
+    return retriever_tokenizer.decode(span_ids, skip_special_tokens=True)
 
 
 def encode_with_chat_format_pretrain(
     example: Dict[str, Any],
     tokenizer,
     max_seq_length: int,
+    max_length: int,
+    min_length: int,
+    crop_strategy: str,
     xrag_token: str,
     retrieval_embed_length: int = 1,
     retriever_text_source: str = "text",
@@ -87,6 +85,15 @@ def encode_with_chat_format_pretrain(
         document = _pick_text(example, prefer_summary=True)
     else:
         document = _pick_text(example, prefer_summary=False)
+    
+    document = crop_text_by_retriever_tokens(
+        text=document,
+        retriever_tokenizer=tokenizer,
+        min_len=min_length,
+        max_len=max_length,
+        strategy=crop_strategy,
+        rng=random.Random(52)
+    )
 
     xrag_token_str = " ".join([xrag_token] * retrieval_embed_length)
     instruction = random.choice(ParaphraseInstructions).format_map({"xrag_token": xrag_token_str})

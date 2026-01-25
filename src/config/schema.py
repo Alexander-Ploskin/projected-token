@@ -31,6 +31,8 @@ class RetrieverConfig:
     retriever_name_or_path: Optional[str] = None
     freeze_retriever: bool = True
     max_length: int = 180
+    min_length: int = 30
+    crop_strategy: str = "uniform"
 
 
 @dataclass
