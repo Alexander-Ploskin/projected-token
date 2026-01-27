@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
 
+# ---------------- logging / distributed ----------------
+
 @dataclass
 class LoggingConfig:
     backends: list[str] = field(default_factory=lambda: ["console"])
@@ -14,9 +16,11 @@ class LoggingConfig:
 
 @dataclass
 class DistributedConfig:
-    mixed_precision: str = "bf16"
+    mixed_precision: str = "bf16"  # "bf16" | "fp16" | "no"
     gradient_accumulation_steps: int = 1
 
+
+# ---------------- model / retriever / projector ----------------
 
 @dataclass
 class ModelConfig:
@@ -24,6 +28,7 @@ class ModelConfig:
     use_flash_attn_2: bool = False
     xrag_token: str = "[XRAG]"
     freeze_llm: bool = True
+    torch_dtype: str = "bf16"  # "bf16" | "fp16" | "auto"
 
 
 @dataclass
@@ -32,19 +37,25 @@ class RetrieverConfig:
     freeze_retriever: bool = True
     max_length: int = 180
     min_length: int = 30
-    crop_strategy: str = "uniform"
+    crop_strategy: str = "uniform"  # "uniform" | "log_uniform"
 
 
 @dataclass
 class ProjectorConfig:
     hidden_dim: int = 1024
     dropout: float = 0.0
+    # NEW: load only projector weights from here (recommended path for finetune)
+    checkpoint: Optional[str] = None
 
+
+# ---------------- data ----------------
 
 @dataclass
 class DataConfig:
     train_file: str = ""
     dev_file: Optional[str] = None
+
+    # pretrain (document-based) knobs
     use_summary_as_document: bool = False
     retriever_text_source: str = "text"  # "text" | "summary"
     max_train_samples: Optional[int] = None
@@ -53,6 +64,13 @@ class DataConfig:
     max_seq_length: int = 336
     retrieval_embed_length: int = 1
 
+    # finetune (messages-only compression) knobs
+    finetune_context_source: str = "all_user"  # "first_user" | "all_user"
+    replace_user_with_xrag: bool = True
+    xrag_user_prefix: str = "Please answer this question: "
+
+
+# ---------------- train / objective ----------------
 
 @dataclass
 class TrainConfig:
@@ -64,13 +82,16 @@ class TrainConfig:
     learning_rate: float = 6e-3
     weight_decay: float = 0.0
     warmup_ratio: float = 0.03
-    lr_scheduler_type: str = "linear"  # mirror HF get_scheduler names
+    lr_scheduler_type: str = "linear"
     num_train_epochs: int = 1
     max_train_steps: Optional[int] = None
 
     clip_grad_norm: float = 1.0
     checkpoint_every_steps: int = 500
     eval_every_steps: int = 500
+
+    save_projector_only: bool = False
+    projector_ckpt_name: str = "projector.pt"
 
 
 @dataclass
@@ -79,8 +100,15 @@ class PretrainObjectiveConfig:
 
 
 @dataclass
+class FinetuneObjectiveConfig:
+    alpha_nll: float = 1.0
+    alpha_kl: float = 0.0
+    kl_temperature: float = 1.0
+
+
+@dataclass
 class ExperimentConfig:
-    task: str = "pretrain"
+    task: str = "pretrain"  # "pretrain" | "finetune"
 
     model: ModelConfig = field(default_factory=ModelConfig)
     retriever: RetrieverConfig = field(default_factory=RetrieverConfig)
@@ -88,7 +116,9 @@ class ExperimentConfig:
 
     data: DataConfig = field(default_factory=DataConfig)
     train: TrainConfig = field(default_factory=TrainConfig)
-    objective: PretrainObjectiveConfig = field(default_factory=PretrainObjectiveConfig)
+
+    # simplest: keep one objective block and add fields as needed
+    objective: Dict[str, Any] = field(default_factory=dict)
 
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     distributed: DistributedConfig = field(default_factory=DistributedConfig)

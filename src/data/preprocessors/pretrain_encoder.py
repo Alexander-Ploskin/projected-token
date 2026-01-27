@@ -1,10 +1,8 @@
 from __future__ import annotations
 from typing import Any, Dict
-import random
 import torch
-import math
 
-
+from src.data.preprocessors.utils import crop_text_by_retriever_tokens, get_random
 
 XRAG_TOKEN = "[XRAG]"
 
@@ -24,6 +22,7 @@ ParaphraseInstructions = [
     "The essence of background: {xrag_token} is captured again in the following statement:",
 ]
 
+
 def _pick_text(example: Dict[str, Any], prefer_summary: bool) -> str:
     if prefer_summary and isinstance(example.get("summary"), str) and example["summary"].strip():
         return example["summary"]
@@ -33,40 +32,6 @@ def _pick_text(example: Dict[str, Any], prefer_summary: bool) -> str:
         if isinstance(example.get(k), str) and example[k].strip():
             return example[k]
     raise KeyError(f"Can't find article text in keys={list(example.keys())}")
-
-def _sample_span_len(min_len: int, max_len: int, strategy: str, rng: random.Random) -> int:
-    if min_len <= 0 or max_len <= 0 or min_len > max_len:
-        raise ValueError(f"bad span lens: min_len={min_len} max_len={max_len}")
-    if strategy == "uniform":
-        return rng.randint(min_len, max_len)
-    if strategy == "log_uniform":
-        a, b = math.log(min_len), math.log(max_len)
-        return int(round(math.exp(rng.uniform(a, b))))
-    raise ValueError(f"unknown strategy={strategy}")
-
-def crop_text_by_retriever_tokens(
-    text: str,
-    retriever_tokenizer,
-    *,
-    min_len: int,
-    max_len: int,
-    strategy: str = "log_uniform",
-    rng: random.Random,
-) -> str:
-    # tokenize without adding special tokens so "length" really means content tokens
-    ids = retriever_tokenizer(text, add_special_tokens=False)["input_ids"]
-    n = len(ids)
-    if n == 0:
-        return ""
-    if n <= min_len:
-        return text
-
-    L = min(_sample_span_len(min_len, max_len, strategy, rng), n)
-    start = rng.randint(0, n - L)
-    span_ids = ids[start : start + L]
-
-    # decode the cropped token span back to text
-    return retriever_tokenizer.decode(span_ids, skip_special_tokens=True)
 
 
 def encode_with_chat_format_pretrain(
@@ -79,24 +44,32 @@ def encode_with_chat_format_pretrain(
     xrag_token: str,
     retrieval_embed_length: int = 1,
     retriever_text_source: str = "text",
+    rng_seed: int = 52,
+    rng_key: str = "id",   # which field to use as stable identifier
 ) -> Dict[str, Any]:
+    # Build deterministic RNG for this example (important for num_proc>1) [web:536]
+    ex_key = str(example.get(rng_key, ""))  # if missing, still deterministic but lower quality
+    rng = get_random(rng_seed, ex_key)
+
     # document for retriever
     if retriever_text_source == "summary":
         document = _pick_text(example, prefer_summary=True)
     else:
         document = _pick_text(example, prefer_summary=False)
-    
+
+    # Length sampling / crop uses the per-example RNG
     document = crop_text_by_retriever_tokens(
         text=document,
         retriever_tokenizer=tokenizer,
         min_len=min_length,
         max_len=max_length,
         strategy=crop_strategy,
-        rng=random.Random(52)
+        rng=rng,
     )
 
+    # Instruction sampling should also use the same RNG (avoid global random)
     xrag_token_str = " ".join([xrag_token] * retrieval_embed_length)
-    instruction = random.choice(ParaphraseInstructions).format_map({"xrag_token": xrag_token_str})
+    instruction = rng.choice(ParaphraseInstructions).format_map({"xrag_token": xrag_token_str})
 
     messages_full = [
         {"role": "user", "content": instruction},
@@ -114,7 +87,6 @@ def encode_with_chat_format_pretrain(
         truncation=True,
         max_length=max_seq_length,
     )
-
     prompt_ids = tokenizer.apply_chat_template(
         messages_prompt,
         tokenize=True,
@@ -127,10 +99,10 @@ def encode_with_chat_format_pretrain(
     labels = input_ids.clone()
 
     cutoff = min(len(prompt_ids), len(full_ids))
-    labels[:cutoff] = -100  # mask everything before assistant content
+    labels[:cutoff] = -100
 
     return {
         "xrag_input_ids": input_ids,
         "xrag_labels": labels,
-        "retriever_input_text": [document],  # retriever encodes the same document
+        "retriever_input_text": [document],
     }
