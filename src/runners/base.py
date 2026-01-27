@@ -4,11 +4,13 @@ import os
 import math
 import torch
 import time
+from typing import Optional
 from accelerate.utils import tqdm
 from accelerate.logging import get_logger
 
 from src.models.factory import build_tokenizer, build_xrag_model
 from src.encoders.hf_encoder import HFMeanPoolRetriever
+from src.runners.checkpoint_manager import CheckpointManager
 from src.train.utils import (
     build_optimizer,
     build_scheduler,
@@ -30,6 +32,12 @@ class TrainRunner:
         self.objective = objective
         self.build_dataloaders_fn = build_dataloaders_fn
         self.validate_fn = validate_fn
+
+        self.checkpoint_manager = CheckpointManager(
+            output_dir=cfg.train.output_dir,
+            save_total_limit=cfg.train.save_total_limit,
+            best_metric_higher_better=False  # Lower metric (e.g. PPL) is better
+        )
 
     def run(self) -> None:
         cfg, acc = self.cfg, self.acc
@@ -264,14 +272,13 @@ class TrainRunner:
                     metric = self.validate_fn(acc, model, retriever, dev_loader)
                     if acc.is_main_process:
                         self.tracker.log_metrics({"dev_ppl": metric}, step=global_step)
+                        self.checkpoint_manager.save(acc, model, tokenizer, save_checkpoint, metric=metric)
+
                     logger.info(f"Dev eval done | ppl={metric:.4f}", main_process_only=True)
 
-                # periodic checkpoint
+                # periodic checkpoint (save latest N)
                 if global_step % cfg.train.checkpoint_every_steps == 0 and acc.is_main_process:
-                    ckpt_dir = os.path.join(cfg.train.output_dir, f"step_{global_step}")
-                    logger.info(f"Saving checkpoint: {ckpt_dir}", main_process_only=True)
-                    save_checkpoint(acc, model, tokenizer, ckpt_dir)
-                    logger.info("Checkpoint saved.", main_process_only=True)
+                    self.checkpoint_manager.save(acc, model, tokenizer, save_checkpoint, step=global_step)
 
                 if global_step >= max_steps:
                     logger.info("Reached max_steps, stopping.", main_process_only=True)
@@ -283,9 +290,6 @@ class TrainRunner:
         # --- final checkpoint ---
         if acc.is_main_process:
             progress.close()
-            last_dir = os.path.join(cfg.train.output_dir, "last")
-            logger.info(f"Saving final checkpoint: {last_dir}", main_process_only=True)
-            save_checkpoint(acc, model, tokenizer, last_dir)
-            logger.info("Final checkpoint saved.", main_process_only=True)
+            self.checkpoint_manager.save(acc, model, tokenizer, save_checkpoint, is_final=True)
 
         logger.info(f"{self.stage_name.capitalize()} run finished.", main_process_only=False)

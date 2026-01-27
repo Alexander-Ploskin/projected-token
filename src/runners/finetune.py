@@ -10,5 +10,5 @@ class FinetuneRunner(TrainRunner):
             stage_name="finetune",
             objective=FinetuneObjective(),
             build_dataloaders_fn=build_finetune_dataloaders,
-            validate_fn=validate_pretrain_ppl,
+            validate_fn=validate_pretrain_ppl, # TODO: Implement validation based on the task
         )

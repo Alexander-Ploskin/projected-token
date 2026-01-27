@@ -1,0 +1,78 @@
+task: pretrain
+
+model:
+  model_name_or_path: Qwen/Qwen2.5-1.5B-Instruct
+  use_flash_attn_2: false
+  xrag_token: "[XRAG]"
+  freeze_llm: true
+
+retriever:
+  retriever_name_or_path: Qwen/Qwen3-Embedding-0.6B
+  freeze_retriever: true
+  max_length: 1024
+
+projector:
+  hidden_dim: 1024
+  dropout: 0.0
+
+data:
+  # ===================================================================
+  # Data Source: HuggingFace Hub
+  # ===================================================================
+  # This config uses HuggingFaceFW/finewiki dataset from HuggingFace Hub
+  dataset_name: HuggingFaceFW/finewiki
+  dataset_subset: en  # English subset
+  dataset_split_train: train
+  dataset_split_dev: validation
+  streaming: false  # Set to true for very large datasets
+  
+  # Optional HuggingFace settings:
+  # dataset_cache_dir: null  # Custom cache location
+  # dataset_revision: null  # Pin specific dataset version
+  
+  # Note: train_file and dev_file are not used when dataset_name is set
+  train_file: ""  # Ignored when using HuggingFace datasets
+  dev_file: null
+  
+  # ===================================================================
+  # Data Processing Settings
+  # ===================================================================
+  max_train_samples: null
+  preprocessing_num_workers: 48
+  overwrite_cache: false
+  max_seq_length: 1024
+  retrieval_embed_length: 1
+  retriever_text_source: text
+  use_summary_as_document: false
+
+
+train:
+  seed: 1234
+  output_dir: ./runs/xrag_hf_finewiki
+  per_device_train_batch_size: 32
+  per_device_eval_batch_size: 32
+
+  learning_rate: 0.001
+  weight_decay: 0.0
+  warmup_ratio: 0.03
+  lr_scheduler_type: linear
+  num_train_epochs: 2
+  max_train_steps: null
+
+  clip_grad_norm: 1.0
+  checkpoint_every_steps: 500
+  eval_every_steps: 200
+  save_total_limit: 3
+
+objective:
+  alpha_nll: 1.0
+
+logging:
+  backends: ["console"]
+  project_name: projected_token
+  run_name: xrag_hf_finewiki
+  log_every_steps: 20
+
+distributed:
+  mixed_precision: bf16
+  gradient_accumulation_steps: 2

@@ -52,10 +52,20 @@ class ProjectorConfig:
 
 @dataclass
 class DataConfig:
+    # Local file-based data loading (JSONl format)
     train_file: str = ""
     dev_file: Optional[str] = None
-
-    # pretrain (document-based) knobs
+    
+    # HuggingFace dataset loading (if dataset_name is set, it takes precedence)
+    dataset_name: Optional[str] = None  # e.g., "HuggingFaceFW/finewiki"
+    dataset_subset: Optional[str] = None  # e.g., "en" for finewiki
+    dataset_split_train: str = "train"  # HF dataset split name for training
+    dataset_split_dev: Optional[str] = "validation"  # HF dataset split name for dev/validation
+    streaming: bool = False  # Use streaming mode for large HF datasets
+    dataset_cache_dir: Optional[str] = None  # Custom cache directory for HF datasets
+    dataset_revision: Optional[str] = None  # Pin specific dataset version/commit
+    
+    # Common data processing settings
     use_summary_as_document: bool = False
     retriever_text_source: str = "text"  # "text" | "summary"
     max_train_samples: Optional[int] = None
@@ -89,6 +99,7 @@ class TrainConfig:
     clip_grad_norm: float = 1.0
     checkpoint_every_steps: int = 500
     eval_every_steps: int = 500
+    save_total_limit: Optional[int] = None
 
     save_projector_only: bool = False
     projector_ckpt_name: str = "projector.pt"
