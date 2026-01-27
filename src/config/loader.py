@@ -4,8 +4,17 @@ from typing import Any, Dict
 
 import yaml
 
-from src.config.schema import ExperimentConfig
-
+from src.config.schema import (
+    ExperimentConfig,
+    ModelConfig,
+    RetrieverConfig,
+    ProjectorConfig,
+    DataConfig,
+    TrainConfig,
+    LoggingConfig,
+    DistributedConfig,
+    EvalConfig
+)
 
 def _deep_update(dst: Dict[str, Any], src: Dict[str, Any]) -> Dict[str, Any]:
     for k, v in src.items():
@@ -15,10 +24,8 @@ def _deep_update(dst: Dict[str, Any], src: Dict[str, Any]) -> Dict[str, Any]:
             dst[k] = v
     return dst
 
-
 def _asdict(cfg: ExperimentConfig) -> Dict[str, Any]:
     return dataclasses.asdict(cfg)
-
 
 def load_experiment_config(yaml_path: str, overrides: Dict[str, Any] | None = None) -> ExperimentConfig:
     base = ExperimentConfig()
@@ -31,16 +38,16 @@ def load_experiment_config(yaml_path: str, overrides: Dict[str, Any] | None = No
     if overrides:
         _deep_update(cfg_dict, overrides)
 
-    # minimal manual reconstruction (keeps mock simple)
     return ExperimentConfig(
         task=cfg_dict.get("task", "pretrain"),
-        model=type(base.model)(**cfg_dict["model"]),
-        retriever=type(base.retriever)(**cfg_dict["retriever"]),
-        projector=type(base.projector)(**cfg_dict["projector"]),
-        data=type(base.data)(**cfg_dict["data"]),
-        train=type(base.train)(**cfg_dict["train"]),
-        objective=type(base.objective)(**cfg_dict["objective"]),
-        logging=type(base.logging)(**cfg_dict["logging"]),
-        distributed=type(base.distributed)(**cfg_dict["distributed"]),
+        model=ModelConfig(**cfg_dict["model"]),
+        retriever=RetrieverConfig(**cfg_dict["retriever"]),
+        projector=ProjectorConfig(**cfg_dict["projector"]),
+        eval=EvalConfig(**cfg_dict.get("eval", {})),
+        data=DataConfig(**cfg_dict["data"]),
+        train=TrainConfig(**cfg_dict["train"]),
+        objective=dict(cfg_dict["objective"]),  # dict
+        logging=LoggingConfig(**cfg_dict["logging"]),
+        distributed=DistributedConfig(**cfg_dict["distributed"]),
         extra=cfg_dict.get("extra", {}),
     )

@@ -1,0 +1,33 @@
+task: eval_popqa
+
+model:
+  model_name_or_path: "cache/qwen25"
+  xrag_token: "[XRAG]"
+  use_flash_attn_2: false
+  torch_dtype: "bf16"
+
+retriever:
+  retriever_name_or_path: "cache/retriever/retriever"
+  freeze_retriever: true
+
+projector:
+  hidden_dim: 1024
+  dropout: 0.0
+  checkpoint: runs/xrag_default/step_27000/projector.pt
+
+eval:
+  dataset_path: "cache/popqa_processed/popqa_enriched.parquet"
+  output_path: "./runs/popqa_eval.json"
+  limit: null  # null = full dataset
+  use_context: true
+  max_context_chars: 15000
+  prompts_dir: "eval/prompts"
+  system_prompt_basic: "basic.txt"
+  system_prompt_context: "context.hbs"
+  max_prompt_chars: 12000
+  device: "cuda"
+  torch_dtype: "fp16"  # eval dtype
+  generation:
+    max_new_tokens: 30
+    do_sample: true
+    temperature: 0.1

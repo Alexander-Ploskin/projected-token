@@ -13,12 +13,10 @@ class LoggingConfig:
     run_name: Optional[str] = None
     log_every_steps: int = 50
 
-
 @dataclass
 class DistributedConfig:
     mixed_precision: str = "bf16"  # "bf16" | "fp16" | "no"
     gradient_accumulation_steps: int = 1
-
 
 # ---------------- model / retriever / projector ----------------
 
@@ -30,7 +28,6 @@ class ModelConfig:
     freeze_llm: bool = True
     torch_dtype: str = "bf16"  # "bf16" | "fp16" | "auto"
 
-
 @dataclass
 class RetrieverConfig:
     retriever_name_or_path: Optional[str] = None
@@ -39,7 +36,6 @@ class RetrieverConfig:
     min_length: int = 30
     crop_strategy: str = "uniform"  # "uniform" | "log_uniform"
 
-
 @dataclass
 class ProjectorConfig:
     hidden_dim: int = 1024
@@ -47,15 +43,13 @@ class ProjectorConfig:
     # NEW: load only projector weights from here (recommended path for finetune)
     checkpoint: Optional[str] = None
 
-
 # ---------------- data ----------------
 
 @dataclass
 class DataConfig:
-    # Local file-based data loading (JSONl format)
     train_file: str = ""
     dev_file: Optional[str] = None
-    
+
     # HuggingFace dataset loading (if dataset_name is set, it takes precedence)
     dataset_name: Optional[str] = None  # e.g., "HuggingFaceFW/finewiki"
     dataset_subset: Optional[str] = None  # e.g., "en" for finewiki
@@ -65,7 +59,7 @@ class DataConfig:
     dataset_cache_dir: Optional[str] = None  # Custom cache directory for HF datasets
     dataset_revision: Optional[str] = None  # Pin specific dataset version/commit
     
-    # Common data processing settings
+    # pretrain (document-based) knobs
     use_summary_as_document: bool = False
     retriever_text_source: str = "text"  # "text" | "summary"
     max_train_samples: Optional[int] = None
@@ -78,7 +72,6 @@ class DataConfig:
     finetune_context_source: str = "all_user"  # "first_user" | "all_user"
     replace_user_with_xrag: bool = True
     xrag_user_prefix: str = "Please answer this question: "
-
 
 # ---------------- train / objective ----------------
 
@@ -104,11 +97,9 @@ class TrainConfig:
     save_projector_only: bool = False
     projector_ckpt_name: str = "projector.pt"
 
-
 @dataclass
 class PretrainObjectiveConfig:
     alpha_nll: float = 1.0
-
 
 @dataclass
 class FinetuneObjectiveConfig:
@@ -116,19 +107,47 @@ class FinetuneObjectiveConfig:
     alpha_kl: float = 0.0
     kl_temperature: float = 1.0
 
+@dataclass
+class GenerationConfig:
+    max_new_tokens: int = 30
+    do_sample: bool = True
+    temperature: float = 0.1
+
+@dataclass
+class EvalConfig:
+    task: str = "eval_popqa"  # "eval_popqa" | future tasks
+    
+    dataset_path: str = "data/popqa/popqa.parquet"
+    output_path: str = "./runs/popqa_eval.json"
+    limit: Optional[int] = None  # null = full dataset
+    
+    use_context: bool = True
+    max_context_chars: int = 15000
+    max_prompt_chars: int = 12000
+    
+    prompts_dir: str = "./prompts"
+    system_prompt_basic: str = "basic.txt"
+    system_prompt_context: str = "context.hbs"
+    
+    device: str = "cuda"
+    torch_dtype: str = "fp16"
+    
+    generation: GenerationConfig = field(default_factory=GenerationConfig)
+
 
 @dataclass
 class ExperimentConfig:
-    task: str = "pretrain"  # "pretrain" | "finetune"
+    task: str = "pretrain"  # "pretrain" | "finetune" | "eval_popqa"
 
     model: ModelConfig = field(default_factory=ModelConfig)
     retriever: RetrieverConfig = field(default_factory=RetrieverConfig)
     projector: ProjectorConfig = field(default_factory=ProjectorConfig)
 
+    eval: EvalConfig = field(default_factory=EvalConfig)
+    
+    # Keep existing for compatibility
     data: DataConfig = field(default_factory=DataConfig)
     train: TrainConfig = field(default_factory=TrainConfig)
-
-    # simplest: keep one objective block and add fields as needed
     objective: Dict[str, Any] = field(default_factory=dict)
 
     logging: LoggingConfig = field(default_factory=LoggingConfig)

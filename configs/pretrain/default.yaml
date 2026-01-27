@@ -31,7 +31,6 @@ data:
   retriever_text_source: text
   use_summary_as_document: false
 
-
 train:
   seed: 1234
   output_dir: ./runs/xrag_default
