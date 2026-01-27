@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from src.runners.base import TrainRunner
 from src.train.objectives import PretrainObjective
 from src.data.datamodule import build_pretrain_dataloaders

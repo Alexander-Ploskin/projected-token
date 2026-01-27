@@ -3,7 +3,6 @@ from __future__ import annotations
 from functools import partial
 from torch.utils.data import DataLoader
 
-from src.data.utils import load_json_dataset
 from src.data.preprocessors.pretrain_encoder import encode_with_chat_format_pretrain
 from src.data.preprocessors.finetune_encoder import encode_with_chat_format_finetune
 from src.data.collators import PretrainCollator, FinetuneCollator
@@ -19,7 +18,24 @@ def _keep_only(ds, keep: set[str]):
 
 
 def build_pretrain_dataloaders(cfg, llm_tokenizer, retriever_tokenizer=None):
-    raw = load_json_dataset(cfg.data.train_file, cfg.data.dev_file)
+    # Load dataset with auto-detection (HuggingFace or JSONl)
+    from src.data.utils import load_dataset_auto, validate_dataset_structure
+    
+    raw = load_dataset_auto(
+        train_file=_cfg_get(cfg.data, "train_file", None) or "",
+        dev_file=_cfg_get(cfg.data, "dev_file", None),
+        dataset_name=_cfg_get(cfg.data, "dataset_name", None),
+        dataset_subset=_cfg_get(cfg.data, "dataset_subset", None),
+        dataset_split_train=_cfg_get(cfg.data, "dataset_split_train", "train"),
+        dataset_split_dev=_cfg_get(cfg.data, "dataset_split_dev", "validation"),
+        streaming=_cfg_get(cfg.data, "streaming", False),
+        dataset_cache_dir=_cfg_get(cfg.data, "dataset_cache_dir", None),
+        dataset_revision=_cfg_get(cfg.data, "dataset_revision", None),
+    )
+    
+    # Validate dataset structure (will auto-detect streaming and skip detailed validation)
+    validate_dataset_structure(raw)
+
 
     # Encoder uses per-example RNG; prefer stable "id" if present, else you can switch to with_indices=True.
     rng_seed = _cfg_get(cfg.train, "seed", 52)
