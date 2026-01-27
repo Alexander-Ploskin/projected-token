@@ -2,7 +2,7 @@ from __future__ import annotations
 import os
 import torch
 import torch.nn.functional as F
-from transformers import get_scheduler
+from transformers import get_scheduler, get_wsd_schedule
 
 from src.distributed.utils import mean_across_processes
 
@@ -12,7 +12,20 @@ def build_optimizer(cfg, model: torch.nn.Module) -> torch.optim.Optimizer:
     return torch.optim.AdamW(params, lr=cfg.train.learning_rate, weight_decay=cfg.train.weight_decay)
 
 def build_scheduler(cfg, optimizer, num_training_steps: int):
-    warmup_steps = int(num_training_steps * cfg.train.warmup_ratio)
+    if cfg.train.num_warmup_steps is not None:
+        warmup_steps = cfg.train.num_warmup_steps
+    else:
+        warmup_steps = int(num_training_steps * cfg.train.warmup_ratio)
+
+    if cfg.train.lr_scheduler_type == "warmup_stable_decay":
+        return get_wsd_schedule(
+            optimizer,
+            num_warmup_steps=warmup_steps,
+            num_training_steps=num_training_steps,
+            num_decay_steps=cfg.train.num_decay_steps or 0,
+            min_lr_ratio=cfg.train.min_lr_ratio or 0.1,
+        )
+
     return get_scheduler(
         name=cfg.train.lr_scheduler_type,
         optimizer=optimizer,

@@ -85,6 +85,9 @@ class TrainConfig:
     learning_rate: float = 6e-3
     weight_decay: float = 0.0
     warmup_ratio: float = 0.03
+    num_warmup_steps: Optional[int] = None
+    num_decay_steps: Optional[int] = None
+    min_lr_ratio: float = 0.0  # e.g. 0.01 for 1% of max_lr
     lr_scheduler_type: str = "linear"
     num_train_epochs: int = 1
     max_train_steps: Optional[int] = None
