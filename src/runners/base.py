@@ -16,6 +16,7 @@ from src.train.utils import (
     save_checkpoint,
     load_projector_checkpoint,
 )
+from src.distributed.utils import mean_across_processes
 from src.train.objectives import BaseObjective
 
 
@@ -177,7 +178,8 @@ class TrainRunner:
         )
 
         global_step = 0
-        rolling = {"loss": 0.0, "nll": 0.0, "kl": 0.0}
+        rolling = {"loss": 0.0, "nll": 0.0, "kl": 0.0, "nll_sum": 0.0, "ntokens": 0.0}
+        eval_rolling = {"nll_sum": 0.0, "ntokens": 0.0}
 
         for epoch in range(cfg.train.num_train_epochs):
             model.train()
@@ -222,6 +224,13 @@ class TrainRunner:
                     optimizer.step()
                     optimizer.zero_grad()
                     scheduler.step()
+                    
+                    # Accumulate metrics across micro-batches
+                    for k, v in bundle.logs.items():
+                        if k in rolling:
+                            rolling[k] += v
+                        if k in eval_rolling:
+                            eval_rolling[k] += v
 
                 if not acc.sync_gradients:
                     continue
@@ -247,33 +256,51 @@ class TrainRunner:
                         "eta_min": f"{eta_sec/60:.1f}",
                     })
 
-                    for k, v in bundle.logs.items():
-                        if k in rolling:
-                            rolling[k] += v
-
                 # periodic scalar logs
                 if global_step % cfg.logging.log_every_steps == 0 and acc.is_main_process:
-                    denom = float(cfg.logging.log_every_steps)
+                    denom = float(cfg.logging.log_every_steps) * cfg.distributed.gradient_accumulation_steps
                     to_log = {
                         "learning_rate": scheduler.get_last_lr()[0],
                         "train_loss": rolling["loss"] / denom,
                     }
-                    if "nll" in bundle.logs:
+                    if "nll" in rolling and rolling["nll"] > 0:
                         to_log["train_nll"] = rolling["nll"] / denom
-                    if "kl" in bundle.logs:
+                    if "kl" in rolling and rolling["kl"] > 0:
                         to_log["train_kl"] = rolling["kl"] / denom
                     self.tracker.log_metrics(to_log, step=global_step)
-                    rolling = {"loss": 0.0, "nll": 0.0, "kl": 0.0}
+                    rolling = {"loss": 0.0, "nll": 0.0, "kl": 0.0, "nll_sum": 0.0, "ntokens": 0.0}
 
                 # periodic eval
                 if dev_loader is not None and self.validate_fn is not None and global_step % cfg.train.eval_every_steps == 0:
                     logger.info(f"Running dev eval at step={global_step} ...", main_process_only=True)
                     metric = self.validate_fn(acc, model, retriever, dev_loader)
                     if acc.is_main_process:
-                        self.tracker.log_metrics({"dev_ppl": metric}, step=global_step)
+                        # Synchronize training metrics for accurate PPL
+                        t_nll_sum = torch.tensor(eval_rolling["nll_sum"], device=acc.device)
+                        t_ntokens = torch.tensor(eval_rolling["ntokens"], device=acc.device)
+                        
+                        # Use mean_across_processes and multiply by num_processes to get sum
+                        t_nll_sum = mean_across_processes(acc, t_nll_sum) * acc.num_processes
+                        t_ntokens = mean_across_processes(acc, t_ntokens) * acc.num_processes
+                        
+                        metrics_to_log = {"dev_ppl": metric}
+                        if t_ntokens > 0:
+                            train_ppl = math.exp(t_nll_sum.item() / t_ntokens.item())
+                            metrics_to_log["train_ppl"] = train_ppl
+                            logger.info(f"Train evaluation over last {cfg.train.eval_every_steps} steps | ppl={train_ppl:.4f}", main_process_only=True)
+                        
+                        self.tracker.log_metrics(metrics_to_log, step=global_step)
                         self.checkpoint_manager.save(acc, model, tokenizer, save_checkpoint, metric=metric)
 
+                    else:
+                        # Non-main processes also need to participate in synchronization
+                        t_nll_sum = torch.tensor(eval_rolling["nll_sum"], device=acc.device)
+                        t_ntokens = torch.tensor(eval_rolling["ntokens"], device=acc.device)
+                        mean_across_processes(acc, t_nll_sum)
+                        mean_across_processes(acc, t_ntokens)
+
                     logger.info(f"Dev eval done | ppl={metric:.4f}", main_process_only=True)
+                    eval_rolling = {"nll_sum": 0.0, "ntokens": 0.0}
 
                 # periodic checkpoint (save latest N)
                 if global_step % cfg.train.checkpoint_every_steps == 0 and acc.is_main_process:
