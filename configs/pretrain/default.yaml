@@ -57,7 +57,7 @@ objective:
   alpha_nll: 1.0
 
 logging:
-  backends: ["console"]
+  backends: ["console", "tensorboard"]
   project_name: projected_token
   run_name: xrag_default
   log_every_steps: 20

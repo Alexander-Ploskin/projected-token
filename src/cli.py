@@ -37,7 +37,7 @@ def pretrain_cmd(config: Path) -> None:
         gradient_accumulation_steps=cfg.distributed.gradient_accumulation_steps,
     )
 
-    tracker = build_tracker(dataclasses.asdict(cfg.logging))
+    tracker = build_tracker(dataclasses.asdict(cfg.logging), log_dir=str(cfg.train.output_dir))
     if accelerator.is_main_process:
         tracker.log_config(dataclasses.asdict(cfg))
 
