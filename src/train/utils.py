@@ -3,6 +3,7 @@ import os
 import torch
 import torch.nn.functional as F
 from transformers import get_scheduler, get_wsd_schedule
+from accelerate.utils import tqdm
 
 from src.distributed.utils import mean_across_processes
 
@@ -63,8 +64,17 @@ def validate_pretrain_ppl(accelerator, xrag_model, retriever, dataloader) -> flo
 
     total_nll = torch.tensor(0.0, device=accelerator.device)
     total_tokens = torch.tensor(0.0, device=accelerator.device)
+    
+    progress = tqdm(
+        total=len(dataloader),
+        desc="Evaluating",
+        main_process_only=True,
+        leave=False
+    )
 
     for batch in dataloader:
+        # Move batch to device
+        batch = {k: v.to(accelerator.device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
         retrieval_embeds = None
         if retriever is not None:
             retrieval_embeds = retriever.encode(
@@ -95,6 +105,9 @@ def validate_pretrain_ppl(accelerator, xrag_model, retriever, dataloader) -> flo
 
         total_nll += nll_sum
         total_tokens += num
+        progress.update(1)
+
+    progress.close()
 
     # We need SUM across processes here (not mean), then compute ratio.
     total_nll = mean_across_processes(accelerator, total_nll) * accelerator.num_processes
