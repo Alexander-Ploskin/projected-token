@@ -276,6 +276,3 @@ class COCOM(PreTrainedModel):
         }
 
         return self.generate(model_input, max_new_tokens)
-        
-
-        

@@ -2,109 +2,112 @@ import json
 import math
 import os
 import random
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 
 import torch
 from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 
 from accelerate import Accelerator
-from datasets import load_dataset
+from datasets import load_dataset, Dataset as HFDataset
+from datasets.iterable_dataset import IterableDataset as HFIterableDataset
 
 from transformers import get_linear_schedule_with_warmup
 
-from modeling_cocom_qwen import COCOM, COCOMConfig
+from cocom.modeling_cocom import COCOM, COCOMConfig
 
+
+def select_text_column(ds):
+    # Works for both Dataset and IterableDataset; IterableDataset.map is lazy.
+    def pick_text(ex):
+        return {"text": ex.get("text") or ex.get("content") or ""}
+    # remove_columns differs a bit across versions; safest is to just keep "text" in the output
+    return ds.map(pick_text)    
 
 class COCOMPretrainDataset(Dataset):
-    
-    def __init__(
-        self,
-        texts: List[str],
-        model: COCOM,
-        max_context_tokens: int = 128,
-        stage: int = 1,  # 1 - auto-encoding, 2 - language modeling
-    ):
-        self.model = model
-        self.compr_tokenizer = model.compr.tokenizer if model.compr is not None else None
-        self.decoder_tokenizer = model.decoder_tokenizer
+    def __init__(self, texts, model: COCOM, max_context_tokens: int = 128, stage: int = 1, accelerator=None):
+        raw_model = accelerator.unwrap_model(model) if accelerator else model
+        self.compr_tokenizer = raw_model.compr.tokenizer if getattr(raw_model, "compr", None) is not None else None
+        self.decoder_tokenizer = raw_model.decoder_tokenizer
         self.max_context_tokens = max_context_tokens
         self.stage = stage
-        self.texts: List[str] = self._filter_texts(texts)
-        
-        # Qwen2.5-Instruct specific initialization
-        self.is_qwen = "qwen" in model.config.decoder_model_name.lower()
-        self.use_inst_format = not self.is_qwen  # Qwen2.5-Instruct uses different format
 
-    def _filter_texts(self, texts: List[str]) -> List[str]:
-        filtered = []
-        for t in texts:
-            if not t or not t.strip():
-                continue
-            if self.compr_tokenizer is not None:
-                # BERT-based compressor
-                enc = self.compr_tokenizer.encode(
-                    t,
-                    add_special_tokens=True,
-                    truncation=True,
-                    max_length=self.max_context_tokens,
-                )
-                if len(enc) <= self.max_context_tokens:
-                    filtered.append(t.strip())
-            else:
-                # Decoder-based compressor
-                #print(self.decoder_tokenizer)
-                #print(self.decoder_tokenizer.enc_token)
-                #print(self.decoder_tokenizer.bos_token)
-                text_with_tokens = (
-                    self.decoder_tokenizer.enc_token
-                    + self.decoder_tokenizer.bos_token
-                    + t
-                    + self.decoder_tokenizer.bos_token
-                )
-                enc = self.decoder_tokenizer.encode(
-                    text_with_tokens,
-                    add_special_tokens=False,
-                    truncation=True,
-                    max_length=self.max_context_tokens,
-                )
-                if len(enc) <= self.max_context_tokens:
-                    filtered.append(t.strip())
-
-        return filtered
+        self._source = texts
+        if not hasattr(self._source, "__len__"):
+            raise ValueError("This dataset requires a non-streaming HF Dataset (random access).")
+        self._length = len(self._source)
 
     def __len__(self) -> int:
-        return len(self.texts)
+        return self._length
+
+    def _get_text(self, i: int) -> str:
+        ex = self._source[i]
+        if isinstance(ex, dict):
+            t = ex.get("text") or ex.get("content") or ""
+        else:
+            t = str(ex)
+        return t.strip()
+
+    def _passes_filter(self, t: str) -> bool:
+        if not t:
+            return False
+        if self.compr_tokenizer is not None:
+            enc = self.compr_tokenizer.encode(
+                t, add_special_tokens=True, truncation=True, max_length=self.max_context_tokens
+            )
+            return len(enc) <= self.max_context_tokens
+        else:
+            text_with_tokens = (
+                self.decoder_tokenizer.enc_token
+                + self.decoder_tokenizer.bos_token
+                + t
+                + self.decoder_tokenizer.bos_token
+            )
+            enc = self.decoder_tokenizer.encode(
+                text_with_tokens, add_special_tokens=False, truncation=True, max_length=self.max_context_tokens
+            )
+            return len(enc) <= self.max_context_tokens
 
     def __getitem__(self, idx: int) -> Dict[str, str]:
-        text = self.texts[idx]
-        
-        if self.stage == 2:
-            tokens = self.decoder_tokenizer.encode(
-                text,
-                add_special_tokens=False,
-                truncation=True,
-                max_length=self.max_context_tokens * 2, 
-            )
-            split_point = len(tokens) // 2
-            x1_tokens = tokens[:split_point]
-            x2_tokens = tokens[split_point:]
-            
-            x1 = self.decoder_tokenizer.decode(x1_tokens, skip_special_tokens=True)
-            x2 = self.decoder_tokenizer.decode(x2_tokens, skip_special_tokens=True)
-            
-            return {"x1": x1, "x2": x2, "full_text": text}
-        else:
-            return {"text": text}
+        # Retry a few times to avoid rare empty/bad rows without pre-scanning whole dataset
+        for _ in range(8):
+            t = self._get_text(idx)
+            if self._passes_filter(t):
+                if self.stage == 2:
+                    tokens = self.decoder_tokenizer.encode(
+                        t, add_special_tokens=False, truncation=True, max_length=self.max_context_tokens * 2
+                    )
+                    sp = len(tokens) // 2
+                    x1 = self.decoder_tokenizer.decode(tokens[:sp], skip_special_tokens=True)
+                    x2 = self.decoder_tokenizer.decode(tokens[sp:], skip_special_tokens=True)
+                    return {"x1": x1, "x2": x2, "full_text": t}
+                return {"text": t}
+            idx = random.randrange(self._length)
+        # If your corpus is very noisy, increase retries or raise
+        return {"text": "Fallback text."}
 
+
+import math
+import torch
+from typing import List
 
 class COCOMPretrainCollator:
-    def __init__(self, model: COCOM, max_context_tokens: int = 128, stage: int = 1):
-        self.model = model
-        self.compr_tokenizer = model.compr.tokenizer if model.compr is not None else None
-        self.decoder_tokenizer = model.decoder_tokenizer
-        self.compr_rate = model.compr_rate
+    def __init__(
+        self, 
+        model: COCOM, 
+        max_context_tokens: int = 128, 
+        stage: int = 1,
+        max_decoder_tokens: int = 512,  # NEW: hard cap decoder length
+        accelerator: Accelerator = None,
+    ):
+        raw_model = accelerator.unwrap_model(model) if accelerator else model
+        # raw_model = model
+        self.model = raw_model
+        self.compr_tokenizer = raw_model.compr.tokenizer if raw_model.compr is not None else None
+        self.decoder_tokenizer = raw_model.decoder_tokenizer
+        self.compr_rate = raw_model.compr_rate
         self.max_context_tokens = max_context_tokens
+        self.max_decoder_tokens = max_decoder_tokens
         self.stage = stage
         self.is_qwen = "qwen" in model.config.decoder_model_name.lower()
         self.use_inst_format = not self.is_qwen
@@ -125,6 +128,7 @@ class COCOMPretrainCollator:
             return f"<|im_start|>user\n{user_msg}<|im_end|>\n<|im_start|>assistant\n"
 
     def _collate_stage1(self, texts: List[str]) -> Dict[str, torch.Tensor]:
+        # Encoder unchanged
         if self.compr_tokenizer is not None:
             enc_inputs = self.compr_tokenizer(
                 texts,
@@ -182,10 +186,13 @@ class COCOMPretrainCollator:
                     + mem_tokens_str
                     + " [/INST] "
                 )
+                # FIXED: Add truncation + max_length
                 instruction_tokenized = self.decoder_tokenizer(
                     instruction_part,
                     return_tensors="pt",
                     add_special_tokens=False,
+                    truncation=True,
+                    max_length=self.max_decoder_tokens,
                 )
                 instruction_len = instruction_tokenized["input_ids"].size(1)
 
@@ -195,21 +202,26 @@ class COCOMPretrainCollator:
                 instruction = self._create_qwen_chat_prompt("", user_message) + text
                 
                 instruction_part = self._create_qwen_chat_prompt("", user_message)
+                # FIXED: Add truncation + max_length
                 instruction_tokenized = self.decoder_tokenizer(
                     instruction_part,
                     return_tensors="pt",
                     add_special_tokens=False,
+                    truncation=True,
+                    max_length=self.max_decoder_tokens,
                 )
                 instruction_len = instruction_tokenized["input_ids"].size(1)
                 
                 full_instruction_with_bos = instruction
 
+            # FIXED: Add max_length cap here too
             full_tokenized = self.decoder_tokenizer(
                 full_instruction_with_bos,
                 truncation=True,
                 return_tensors="pt",
                 padding=False,
                 add_special_tokens=False,
+                max_length=self.max_decoder_tokens,
             )
             input_ids = full_tokenized["input_ids"].squeeze(0)
 
@@ -246,6 +258,7 @@ class COCOMPretrainCollator:
         }
 
     def _collate_stage2(self, x1_list: List[str], x2_list: List[str]) -> Dict[str, torch.Tensor]:
+        # Encoder unchanged
         if self.compr_tokenizer is not None:
             enc_inputs = self.compr_tokenizer(
                 x1_list,
@@ -306,19 +319,25 @@ class COCOMPretrainCollator:
                     + mem_tokens_str
                     + " [/INST] "
                 )
+                # FIXED: Add truncation + max_length
                 instruction_prefix_tokenized = self.decoder_tokenizer(
                     instruction_prefix,
                     return_tensors="pt",
                     add_special_tokens=False,
+                    truncation=True,
+                    max_length=self.max_decoder_tokens,
                 )
                 instruction_prefix_len = instruction_prefix_tokenized["input_ids"].size(1)
 
                 x1_with_prefix = instruction_prefix + x1 + " "
                 x1_with_bos = self.decoder_tokenizer.bos_token + x1_with_prefix
+                # FIXED: Add truncation + max_length
                 x1_tokenized = self.decoder_tokenizer(
                     x1_with_bos,
                     return_tensors="pt",
                     add_special_tokens=False,
+                    truncation=True,
+                    max_length=self.max_decoder_tokens,
                 )
                 x1_end_len = x1_tokenized["input_ids"].size(1)
 
@@ -328,29 +347,37 @@ class COCOMPretrainCollator:
                 instruction = self._create_qwen_chat_prompt("", user_message) + x1 + " " + x2
                 
                 instruction_prefix = self._create_qwen_chat_prompt("", user_message)
+                # FIXED: Add truncation + max_length
                 instruction_prefix_tokenized = self.decoder_tokenizer(
                     instruction_prefix,
                     return_tensors="pt",
                     add_special_tokens=False,
+                    truncation=True,
+                    max_length=self.max_decoder_tokens,
                 )
                 instruction_prefix_len = instruction_prefix_tokenized["input_ids"].size(1)
 
                 x1_with_prefix = instruction_prefix + x1 + " "
+                # FIXED: Add truncation + max_length
                 x1_tokenized = self.decoder_tokenizer(
                     x1_with_prefix,
                     return_tensors="pt",
                     add_special_tokens=False,
+                    truncation=True,
+                    max_length=self.max_decoder_tokens,
                 )
                 x1_end_len = x1_tokenized["input_ids"].size(1)
                 
                 full_instruction_with_bos = instruction
 
+            # FIXED: Add max_length cap here too
             full_tokenized = self.decoder_tokenizer(
                 full_instruction_with_bos,
                 truncation=True,
                 return_tensors="pt",
                 padding=False,
                 add_special_tokens=False,
+                max_length=self.max_decoder_tokens,
             )
             input_ids = full_tokenized["input_ids"].squeeze(0)
 
@@ -387,46 +414,67 @@ class COCOMPretrainCollator:
         }
 
 
-def load_finewiki_texts(
+
+
+from datasets import load_dataset, Dataset, IterableDataset
+
+def load_finewiki_dataset(
     data_path: Optional[str] = None,
     max_docs: Optional[int] = None,
-) -> List[str]:
+    streaming: bool = True,
+) -> IterableDataset | Dataset:
+    """
+    Load dataset from:
+      - local JSONL/JSON file if data_path provided
+      - HF 'HuggingFaceFW/finewiki' otherwise.
+
+    Returns a datasets Dataset or IterableDataset with a 'text' column.
+    """
     if data_path and os.path.exists(data_path):
-        with open(data_path, "r", encoding="utf-8") as f:
-            if data_path.endswith(".jsonl"):
-                records = [json.loads(line) for line in f]
-                if records and isinstance(records[0], dict):
-                    texts = [
-                        r.get("text", r.get("content", ""))
-                        for r in records
-                    ]
-                else:
-                    texts = [str(r) for r in records]
-            else:
-                payload = json.load(f)
-                if isinstance(payload, dict):
-                    texts = payload.get(
-                        "texts",
-                        payload.get("documents", []),
-                    )
-                else:
-                    texts = payload
+        if data_path.endswith(".jsonl") or data_path.endswith(".json"):
+            # Local JSON/JSONL using datasets, no manual json.loads
+            ds = load_dataset(
+                "json",
+                data_files={"train": data_path},
+                split="train",
+                streaming=streaming,
+            )
+        else:
+            # Fallback: use your old JSON logic if you really have non-JSONL
+            raise ValueError(f"Unsupported corpus format: {data_path}")
     else:
+        # HF Finewiki fallback
         try:
             print("Loading Finewiki from HuggingFace: HuggingFaceFW/finewiki, ...")
-            ds = load_dataset("HuggingFaceFW/finewiki", split="train")
-            texts = [ex.get("text", ex.get("content", "")) for ex in ds]
+            ds = load_dataset(
+                "HuggingFaceFW/finewiki",
+                split="train",
+                streaming=streaming,
+            )
         except Exception as e:
             print(f"Could not load Finewiki from HF: {e}")
             print("Using dummy texts for testing; please provide a real corpus for training.")
-            texts = ["This is a dummy text for COCOM pretraining."] * 1000
+            # Small in‑memory fallback – safe
+            return ["This is a dummy text for COCOM pretraining."] * 1000
 
-    texts = [t for t in texts if isinstance(t, str) and t.strip()]
-    if max_docs:
-        texts = texts[:max_docs]
+    # Normalize to have a 'text' field
+    def _ensure_text(example):
+        if "text" in example and isinstance(example["text"], str):
+            return example
+        if "content" in example and isinstance(example["content"], str):
+            example["text"] = example["content"]
+            return example
+        # drop non-string rows by returning empty text
+        example["text"] = ""
+        return example
 
-    print(f"Loaded {len(texts)} texts from corpus.")
-    return texts
+    ds = ds.map(_ensure_text)
+
+    if max_docs is not None and not isinstance(ds, IterableDataset):
+        # Only possible for non-streaming Dataset
+        ds = ds.select(range(min(max_docs, len(ds))))
+
+    return ds
 
 
 def train_stage(
@@ -449,18 +497,24 @@ def train_stage(
     accelerator.print(f"Stage {stage}: {'Auto-encoding with Context Embeddings' if stage == 1 else 'Language Modeling from Context Embeddings'}")
     accelerator.print("=" * 80)
 
+    print('load dataset')
     dataset = COCOMPretrainDataset(
         texts=train_texts,
         model=model,
         max_context_tokens=max_context_tokens,
         stage=stage,
+        accelerator=accelerator,  # NEW: pass it here
     )
+    print('load collator')
     collator = COCOMPretrainCollator(
         model=model,
         max_context_tokens=max_context_tokens,
         stage=stage,
+        max_decoder_tokens=512,
+        accelerator=accelerator,  # NEW: pass it here too
     )
 
+    print('dataloader')
     dataloader = DataLoader(
         dataset,
         batch_size=batch_size,
@@ -564,7 +618,7 @@ def pretrain_cocom_two_stage(
     output_dir: str = "./cocom_pretrain_checkpoints",
     num_epochs_stage1: int = 1,
     num_epochs_stage2: int = 1,
-    batch_size: int = 256,
+    batch_size: int = 1,
     learning_rate: float = 1e-4,
     warmup_ratio: float = 0.05,
     weight_decay: float = 0.1,
@@ -811,11 +865,15 @@ def main() -> None:
     )
 
     print("Loading corpus...")
-    texts = load_finewiki_texts(args.corpus_path, max_docs=args.max_docs)
+    ds = load_finewiki_dataset(
+        args.corpus_path,
+        max_docs=args.max_docs,
+        streaming=False,  # Arrow + mmap; better for random access & shuffling
+    )
 
     pretrain_cocom_two_stage(
         model_config=cfg,
-        train_texts=texts,
+        train_texts=ds,
         output_dir=args.output_dir,
         num_epochs_stage1=args.num_epochs_stage1,
         num_epochs_stage2=args.num_epochs_stage2,
