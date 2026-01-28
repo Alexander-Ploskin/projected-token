@@ -15,7 +15,7 @@ retriever:
 projector:
   hidden_dim: 1024
   dropout: 0.0
-  checkpoint: runs/xrag_default/step_4500/projector.pt
+  checkpoint: runs/xrag_default/step_27000/projector.pt
 
 data:
   train_file: "cache/qa_train.jsonl"
@@ -30,20 +30,24 @@ data:
 
 train:
   seed: 1234
-  output_dir: ./runs/xrag_sft
-  per_device_train_batch_size: 16
-  per_device_eval_batch_size: 16
+  output_dir: ./runs/xrag_hf_finewiki_sft
+  per_device_train_batch_size: 8
+  per_device_eval_batch_size: 8
 
-  learning_rate: 0.006
-  weight_decay: 0.0
+  learning_rate: 0.001
+  weight_decay: 0.1
   warmup_ratio: 0.03
-  lr_scheduler_type: linear
-  num_train_epochs: 1
+  num_warmup_steps: null
+  num_decay_steps: 1000
+  min_lr_ratio: 0.01
+  lr_scheduler_type: warmup_stable_decay
+  num_train_epochs: 2
   max_train_steps: null
 
   clip_grad_norm: 1.0
-  checkpoint_every_steps: 1500
+  checkpoint_every_steps: 500
   eval_every_steps: 200
+  save_total_limit: 3
 
 logging:
   backends: ["console"]
