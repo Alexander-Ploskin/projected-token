@@ -25,6 +25,7 @@ data:
   dev_file: cache/finewiki_dev.jsonl
   max_train_samples: null
   preprocessing_num_workers: 24
+  dataloader_num_workers: 24
   overwrite_cache: false
   max_seq_length: 512
   retrieval_embed_length: 1

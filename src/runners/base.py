@@ -3,6 +3,8 @@ from __future__ import annotations
 import math
 import torch
 import time
+import re
+import os
 from typing import Optional
 from accelerate.utils import tqdm
 from accelerate.logging import get_logger
@@ -16,6 +18,7 @@ from src.train.utils import (
     save_checkpoint,
     load_projector_checkpoint,
 )
+from src.distributed.utils import mean_across_processes
 from src.train.objectives import BaseObjective
 
 
@@ -95,8 +98,21 @@ class TrainRunner:
         if projector_checkpoint_path is not None:
             t0 = time.time()
             logger.info(f"Loading projector checkpoint: {projector_checkpoint_path}", main_process_only=True)
-            load_projector_checkpoint(model, projector_checkpoint_path)
+            load_projector_checkpoint(model, projector_checkpoint_path, projector_ckpt_name=cfg.train.projector_ckpt_name)
             logger.info(f"Projector checkpoint loaded in {time.time()-t0:.2f}s", main_process_only=True)
+
+        # --- resumption state ---
+        initial_step = 0
+        if cfg.train.resume_step is not None:
+            initial_step = cfg.train.resume_step
+        elif projector_checkpoint_path is not None:
+            # Try to parse from path e.g. runs/pretrain/checkpoint-100 or runs/pretrain/checkpoint-100/projector.pt
+            match = re.search(r"checkpoint-(\d+)", projector_checkpoint_path)
+            if match:
+                initial_step = int(match.group(1))
+
+        if initial_step > 0:
+            logger.info(f"Resumption configured | starting from step {initial_step}", main_process_only=True)
 
         # --- freezing ---
         if cfg.model.freeze_llm:
@@ -177,13 +193,41 @@ class TrainRunner:
         )
 
         global_step = 0
-        rolling = {"loss": 0.0, "nll": 0.0, "kl": 0.0}
+        
+        # Calculate resumption epoch and step within epoch
+        resume_epoch = 0
+        resume_step_in_epoch = 0
+        if initial_step > 0:
+            resume_epoch = initial_step // steps_per_epoch
+            resume_step_in_epoch = initial_step % steps_per_epoch
+            
+            logger.info(f"Resumption: skipping to epoch {resume_epoch} step {resume_step_in_epoch}", main_process_only=True)
+            logger.info(f"Fast-forwarding scheduler and progress to global step {initial_step}...", main_process_only=True)
+            for _ in range(initial_step):
+                scheduler.step()
+            progress.update(initial_step)
+            global_step = initial_step
+
+        rolling = {"loss": 0.0, "nll": 0.0, "kl": 0.0, "nll_sum": 0.0, "ntokens": 0.0}
+        eval_rolling = {"nll_sum": 0.0, "ntokens": 0.0}
 
         for epoch in range(cfg.train.num_train_epochs):
+            if epoch < resume_epoch:
+                continue
+
             model.train()
             logger.info(f"Epoch {epoch+1}/{cfg.train.num_train_epochs} start", main_process_only=True)
 
-            for batch in train_loader:
+            # Efficiently skip batches in the current epoch if needed
+            if epoch == resume_epoch and resume_step_in_epoch > 0:
+                batches_to_skip_in_epoch = resume_step_in_epoch * cfg.distributed.gradient_accumulation_steps
+                logger.info(f"Skipping first {batches_to_skip_in_epoch} micro-batches in this epoch...", main_process_only=True)
+                active_loader = acc.skip_first_batches(train_loader, batches_to_skip_in_epoch)
+                logger.info(f"Active loader (after skipping) has {len(active_loader)} batches and will be ready in a few minutes", main_process_only=True)
+            else:
+                active_loader = train_loader
+
+            for batch in active_loader:
                 with acc.accumulate(model):
                     retrieval_kwargs = {}
                     if retriever is not None:
@@ -222,6 +266,13 @@ class TrainRunner:
                     optimizer.step()
                     optimizer.zero_grad()
                     scheduler.step()
+                    
+                    # Accumulate metrics across micro-batches
+                    for k, v in bundle.logs.items():
+                        if k in rolling:
+                            rolling[k] += v
+                        if k in eval_rolling:
+                            eval_rolling[k] += v
 
                 if not acc.sync_gradients:
                     continue
@@ -247,33 +298,51 @@ class TrainRunner:
                         "eta_min": f"{eta_sec/60:.1f}",
                     })
 
-                    for k, v in bundle.logs.items():
-                        if k in rolling:
-                            rolling[k] += v
-
                 # periodic scalar logs
                 if global_step % cfg.logging.log_every_steps == 0 and acc.is_main_process:
-                    denom = float(cfg.logging.log_every_steps)
+                    denom = float(cfg.logging.log_every_steps) * cfg.distributed.gradient_accumulation_steps
                     to_log = {
                         "learning_rate": scheduler.get_last_lr()[0],
                         "train_loss": rolling["loss"] / denom,
                     }
-                    if "nll" in bundle.logs:
+                    if "nll" in rolling and rolling["nll"] > 0:
                         to_log["train_nll"] = rolling["nll"] / denom
-                    if "kl" in bundle.logs:
+                    if "kl" in rolling and rolling["kl"] > 0:
                         to_log["train_kl"] = rolling["kl"] / denom
                     self.tracker.log_metrics(to_log, step=global_step)
-                    rolling = {"loss": 0.0, "nll": 0.0, "kl": 0.0}
+                    rolling = {"loss": 0.0, "nll": 0.0, "kl": 0.0, "nll_sum": 0.0, "ntokens": 0.0}
 
                 # periodic eval
                 if dev_loader is not None and self.validate_fn is not None and global_step % cfg.train.eval_every_steps == 0:
                     logger.info(f"Running dev eval at step={global_step} ...", main_process_only=True)
                     metric = self.validate_fn(acc, model, retriever, dev_loader)
                     if acc.is_main_process:
-                        self.tracker.log_metrics({"dev_ppl": metric}, step=global_step)
+                        # Synchronize training metrics for accurate PPL
+                        t_nll_sum = torch.tensor(eval_rolling["nll_sum"], device=acc.device)
+                        t_ntokens = torch.tensor(eval_rolling["ntokens"], device=acc.device)
+                        
+                        # Use mean_across_processes and multiply by num_processes to get sum
+                        t_nll_sum = mean_across_processes(acc, t_nll_sum) * acc.num_processes
+                        t_ntokens = mean_across_processes(acc, t_ntokens) * acc.num_processes
+                        
+                        metrics_to_log = {"dev_ppl": metric}
+                        if t_ntokens > 0:
+                            train_ppl = math.exp(t_nll_sum.item() / t_ntokens.item())
+                            metrics_to_log["train_ppl"] = train_ppl
+                            logger.info(f"Train evaluation over last {cfg.train.eval_every_steps} steps | ppl={train_ppl:.4f}", main_process_only=True)
+                        
+                        self.tracker.log_metrics(metrics_to_log, step=global_step)
                         self.checkpoint_manager.save(acc, model, tokenizer, save_checkpoint, metric=metric)
 
+                    else:
+                        # Non-main processes also need to participate in synchronization
+                        t_nll_sum = torch.tensor(eval_rolling["nll_sum"], device=acc.device)
+                        t_ntokens = torch.tensor(eval_rolling["ntokens"], device=acc.device)
+                        mean_across_processes(acc, t_nll_sum)
+                        mean_across_processes(acc, t_ntokens)
+
                     logger.info(f"Dev eval done | ppl={metric:.4f}", main_process_only=True)
+                    eval_rolling = {"nll_sum": 0.0, "ntokens": 0.0}
 
                 # periodic checkpoint (save latest N)
                 if global_step % cfg.train.checkpoint_every_steps == 0 and acc.is_main_process:

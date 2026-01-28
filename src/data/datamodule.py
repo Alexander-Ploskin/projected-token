@@ -95,6 +95,8 @@ def build_pretrain_dataloaders(cfg, llm_tokenizer, retriever_tokenizer=None):
         shuffle=True,
         batch_size=cfg.train.per_device_train_batch_size,
         collate_fn=collate,
+        num_workers=_cfg_get(cfg.data, "dataloader_num_workers", 0),
+        pin_memory=True,
     )
 
     dev_loader = None
@@ -104,6 +106,8 @@ def build_pretrain_dataloaders(cfg, llm_tokenizer, retriever_tokenizer=None):
             shuffle=False,
             batch_size=cfg.train.per_device_eval_batch_size,
             collate_fn=collate,
+            num_workers=_cfg_get(cfg.data, "dataloader_num_workers", 0),
+            pin_memory=True,
         )
 
     return train_loader, dev_loader
@@ -209,6 +213,8 @@ def build_finetune_dataloaders(cfg, llm_tokenizer, retriever_tokenizer=None):
         shuffle=True,
         batch_size=cfg.train.per_device_train_batch_size,
         collate_fn=collate,
+        num_workers=_cfg_get(cfg.data, "dataloader_num_workers", 0),
+        pin_memory=True,
     )
 
     dev_loader = None
@@ -218,6 +224,8 @@ def build_finetune_dataloaders(cfg, llm_tokenizer, retriever_tokenizer=None):
             shuffle=False,
             batch_size=cfg.train.per_device_eval_batch_size,
             collate_fn=collate,
+            num_workers=_cfg_get(cfg.data, "dataloader_num_workers", 0),
+            pin_memory=True,
         )
 
     return train_loader, dev_loader

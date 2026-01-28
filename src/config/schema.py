@@ -67,6 +67,7 @@ class DataConfig:
     overwrite_cache: bool = False
     max_seq_length: int = 336
     retrieval_embed_length: int = 1
+    dataloader_num_workers: int = 0  # NEW: performance improvement
 
     # finetune (messages-only compression) knobs
     finetune_context_source: str = "all_user"  # "first_user" | "all_user"
@@ -79,6 +80,7 @@ class DataConfig:
 class TrainConfig:
     seed: int = 1234
     output_dir: str = "./runs/pretrain"
+    resume_step: Optional[int] = None
     per_device_train_batch_size: int = 2
     per_device_eval_batch_size: int = 2
 

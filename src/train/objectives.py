@@ -11,15 +11,20 @@ class LossBundle:
     loss: "torch.Tensor"                 # total scalar used for backward
     logs: dict[str, float]               # already detached floats (per-step)
 
-def nll_loss(logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+def nll_loss(logits: torch.Tensor, labels: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     # logits: [B,T,V] predicts next token; shift so position t predicts labels at t+1
     logits = logits[:, :-1, :].contiguous()
     labels = labels[:, 1:].contiguous()
-    return F.cross_entropy(
-        logits.view(-1, logits.size(-1)),
-        labels.view(-1),
-        ignore_index=-100,
-    )
+    
+    # We need both mean (for backward) and sum (for exact PPL)
+    l_flat = logits.view(-1, logits.size(-1))
+    t_flat = labels.view(-1)
+    
+    loss_mean = F.cross_entropy(l_flat, t_flat, ignore_index=-100, reduction="mean")
+    loss_sum = F.cross_entropy(l_flat, t_flat, ignore_index=-100, reduction="sum")
+    ntokens = (t_flat != -100).sum()
+    
+    return loss_mean, loss_sum, ntokens
 
 def kl_div_from_logits(
     *,
@@ -60,19 +65,29 @@ class BaseObjective:
 
 class PretrainObjective(BaseObjective):
     def compute(self, *, cfg, acc, model, batch, student_outputs, teacher_outputs=None) -> LossBundle:
-        nll = nll_loss(student_outputs.logits, batch["xrag_labels"])
+        nll, nll_sum, ntokens = nll_loss(student_outputs.logits, batch["xrag_labels"])
         loss = nll
-        return LossBundle(loss=loss, logs={"nll": float(nll.detach().float().item()), "loss": float(loss.detach().float().item())})
+        return LossBundle(
+            loss=loss, 
+            logs={
+                "nll": float(nll.detach().float().item()), 
+                "loss": float(loss.detach().float().item()),
+                "nll_sum": float(nll_sum.detach().float().item()),
+                "ntokens": float(ntokens.detach().float().item()),
+            }
+        )
 
 class FinetuneObjective(BaseObjective):
     def compute(self, *, cfg, acc, model, batch, student_outputs, teacher_outputs=None) -> LossBundle:
         loss = None
         logs: dict[str, float] = {}
 
-        if cfg.objective["alpha_nll"] and cfg.objective["alpha_nll"] > 0:
-            nll = nll_loss(student_outputs.logits, batch["xrag_labels"])
+        if cfg.objective.get("alpha_nll", 0.0) > 0:
+            nll, nll_sum, ntokens = nll_loss(student_outputs.logits, batch["xrag_labels"])
             loss = cfg.objective["alpha_nll"] * nll
             logs["nll"] = float(nll.detach().float().item())
+            logs["nll_sum"] = float(nll_sum.detach().float().item())
+            logs["ntokens"] = float(ntokens.detach().float().item())
 
         if cfg.objective["alpha_kl"] and cfg.objective["alpha_kl"] > 0:
             assert teacher_outputs is not None
