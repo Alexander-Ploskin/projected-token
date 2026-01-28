@@ -7,7 +7,7 @@ accelerate config
 
 accelerate launch pretrain_cocom_inst.py \
   --decoder_model Qwen/Qwen2.5-1.5B-Instruct \
-  --compr_model bert-base-uncased \
+  --compr_model none \
   --compr_rate 64 \
   --lora \
   --max_docs 500000 \
