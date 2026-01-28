@@ -102,8 +102,22 @@ def load_huggingface_dataset(
                 else:
                     logger.warning(
                         f"Dev split '{split_dev}' not found in {available_splits}. "
-                        f"Continuing without validation set."
                     )
+                    if streaming:
+                        logger.info("  Streaming mode: Creating 'dev' split by taking first 1000 samples.")
+                        # For streaming, we take some samples for dev and skip them for train
+                        result["dev"] = dataset[split_train].take(1000)
+                        result["train"] = dataset[split_train].skip(1000)
+                    else:
+                        logger.info("  Non-streaming: Splitting training data (1% for validation, max 1000 samples).")
+                        # For non-streaming, use train_test_split
+                        train_size = len(dataset[split_train])
+                        test_size = min(1000, max(1, int(train_size * 0.01)))
+                        split_data = dataset[split_train].train_test_split(test_size=test_size, seed=42)
+                        result["train"] = split_data["train"]
+                        result["dev"] = split_data["test"]
+                    
+                    logger.info(f"  Created 'dev' split from training data.")
             
             return DatasetDict(result)
         
