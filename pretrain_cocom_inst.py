@@ -13,7 +13,7 @@ from datasets import load_dataset
 
 from transformers import get_linear_schedule_with_warmup
 
-from modeling_cocom import COCOM, COCOMConfig
+from modeling_cocom_qwen import COCOM, COCOMConfig
 
 
 class COCOMPretrainDataset(Dataset):
@@ -31,6 +31,10 @@ class COCOMPretrainDataset(Dataset):
         self.max_context_tokens = max_context_tokens
         self.stage = stage
         self.texts: List[str] = self._filter_texts(texts)
+        
+        # Qwen2.5-Instruct specific initialization
+        self.is_qwen = "qwen" in model.config.decoder_model_name.lower()
+        self.use_inst_format = not self.is_qwen  # Qwen2.5-Instruct uses different format
 
     def _filter_texts(self, texts: List[str]) -> List[str]:
         filtered = []
@@ -49,6 +53,9 @@ class COCOMPretrainDataset(Dataset):
                     filtered.append(t.strip())
             else:
                 # Decoder-based compressor
+                #print(self.decoder_tokenizer)
+                #print(self.decoder_tokenizer.enc_token)
+                #print(self.decoder_tokenizer.bos_token)
                 text_with_tokens = (
                     self.decoder_tokenizer.enc_token
                     + self.decoder_tokenizer.bos_token
@@ -99,6 +106,8 @@ class COCOMPretrainCollator:
         self.compr_rate = model.compr_rate
         self.max_context_tokens = max_context_tokens
         self.stage = stage
+        self.is_qwen = "qwen" in model.config.decoder_model_name.lower()
+        self.use_inst_format = not self.is_qwen
 
     def __call__(self, batch: List[Dict[str, str]]) -> Dict[str, torch.Tensor]:
         if self.stage == 1:
@@ -108,6 +117,12 @@ class COCOMPretrainCollator:
             x1_list = [item["x1"] for item in batch]
             x2_list = [item["x2"] for item in batch]
             return self._collate_stage2(x1_list, x2_list)
+
+    def _create_qwen_chat_prompt(self, system_msg: str, user_msg: str) -> str:
+        if system_msg:
+            return f"<|im_start|>system\n{system_msg}<|im_end|>\n<|im_start|>user\n{user_msg}<|im_end|>\n<|im_start|>assistant\n"
+        else:
+            return f"<|im_start|>user\n{user_msg}<|im_end|>\n<|im_start|>assistant\n"
 
     def _collate_stage1(self, texts: List[str]) -> Dict[str, torch.Tensor]:
         if self.compr_tokenizer is not None:
@@ -155,25 +170,40 @@ class COCOMPretrainCollator:
         labels_list: List[torch.Tensor] = []
 
         for text in texts:
-            instruction = (
-                "[INST] Reconstruct the following text from compressed context embeddings: "
-                + mem_tokens_str
-                + " [/INST] "
-                + text
-            )
-            instruction_part = (
-                "[INST] Reconstruct the following text from compressed context embeddings: "
-                + mem_tokens_str
-                + " [/INST] "
-            )
-            instruction_tokenized = self.decoder_tokenizer(
-                instruction_part,
-                return_tensors="pt",
-                add_special_tokens=False,
-            )
-            instruction_len = instruction_tokenized["input_ids"].size(1)
+            if self.use_inst_format:
+                instruction = (
+                    "[INST] Reconstruct the following text from compressed context embeddings: "
+                    + mem_tokens_str
+                    + " [/INST] "
+                    + text
+                )
+                instruction_part = (
+                    "[INST] Reconstruct the following text from compressed context embeddings: "
+                    + mem_tokens_str
+                    + " [/INST] "
+                )
+                instruction_tokenized = self.decoder_tokenizer(
+                    instruction_part,
+                    return_tensors="pt",
+                    add_special_tokens=False,
+                )
+                instruction_len = instruction_tokenized["input_ids"].size(1)
 
-            full_instruction_with_bos = self.decoder_tokenizer.bos_token + instruction
+                full_instruction_with_bos = self.decoder_tokenizer.bos_token + instruction
+            else:
+                user_message = f"Reconstruct the following text from compressed context embeddings: {mem_tokens_str}"
+                instruction = self._create_qwen_chat_prompt("", user_message) + text
+                
+                instruction_part = self._create_qwen_chat_prompt("", user_message)
+                instruction_tokenized = self.decoder_tokenizer(
+                    instruction_part,
+                    return_tensors="pt",
+                    add_special_tokens=False,
+                )
+                instruction_len = instruction_tokenized["input_ids"].size(1)
+                
+                full_instruction_with_bos = instruction
+
             full_tokenized = self.decoder_tokenizer(
                 full_instruction_with_bos,
                 truncation=True,
@@ -183,13 +213,8 @@ class COCOMPretrainCollator:
             )
             input_ids = full_tokenized["input_ids"].squeeze(0)
 
-            instruction_with_bos = self.decoder_tokenizer.bos_token + instruction_part
-            instruction_with_bos_tokenized = self.decoder_tokenizer(
-                instruction_with_bos,
-                return_tensors="pt",
-                add_special_tokens=False,
-            )
-            instruction_len = instruction_with_bos_tokenized["input_ids"].size(1)
+            if self.is_qwen and self.decoder_tokenizer.eos_token_id is not None:
+                input_ids = torch.cat([input_ids, torch.tensor([self.decoder_tokenizer.eos_token_id])])
 
             labels = [-100] * instruction_len + input_ids[instruction_len:].tolist()
 
@@ -267,37 +292,59 @@ class COCOMPretrainCollator:
         labels_list: List[torch.Tensor] = []
 
         for x1, x2 in zip(x1_list, x2_list):
-            instruction = (
-                "[INST] Continue the following text based on compressed context embeddings: "
-                + mem_tokens_str
-                + " [/INST] "
-                + x1
-                + " "
-                + x2
-            )
+            if self.use_inst_format:
+                instruction = (
+                    "[INST] Continue the following text based on compressed context embeddings: "
+                    + mem_tokens_str
+                    + " [/INST] "
+                    + x1
+                    + " "
+                    + x2
+                )
+                instruction_prefix = (
+                    "[INST] Continue the following text based on compressed context embeddings: "
+                    + mem_tokens_str
+                    + " [/INST] "
+                )
+                instruction_prefix_tokenized = self.decoder_tokenizer(
+                    instruction_prefix,
+                    return_tensors="pt",
+                    add_special_tokens=False,
+                )
+                instruction_prefix_len = instruction_prefix_tokenized["input_ids"].size(1)
 
-            instruction_prefix = (
-                "[INST] Continue the following text based on compressed context embeddings: "
-                + mem_tokens_str
-                + " [/INST] "
-            )
-            instruction_prefix_tokenized = self.decoder_tokenizer(
-                instruction_prefix,
-                return_tensors="pt",
-                add_special_tokens=False,
-            )
-            instruction_prefix_len = instruction_prefix_tokenized["input_ids"].size(1)
+                x1_with_prefix = instruction_prefix + x1 + " "
+                x1_with_bos = self.decoder_tokenizer.bos_token + x1_with_prefix
+                x1_tokenized = self.decoder_tokenizer(
+                    x1_with_bos,
+                    return_tensors="pt",
+                    add_special_tokens=False,
+                )
+                x1_end_len = x1_tokenized["input_ids"].size(1)
 
-            x1_with_prefix = instruction_prefix + x1 + " "
-            x1_with_bos = self.decoder_tokenizer.bos_token + x1_with_prefix
-            x1_tokenized = self.decoder_tokenizer(
-                x1_with_bos,
-                return_tensors="pt",
-                add_special_tokens=False,
-            )
-            x1_end_len = x1_tokenized["input_ids"].size(1)
+                full_instruction_with_bos = self.decoder_tokenizer.bos_token + instruction
+            else:
+                user_message = f"Continue the following text based on compressed context embeddings: {mem_tokens_str}"
+                instruction = self._create_qwen_chat_prompt("", user_message) + x1 + " " + x2
+                
+                instruction_prefix = self._create_qwen_chat_prompt("", user_message)
+                instruction_prefix_tokenized = self.decoder_tokenizer(
+                    instruction_prefix,
+                    return_tensors="pt",
+                    add_special_tokens=False,
+                )
+                instruction_prefix_len = instruction_prefix_tokenized["input_ids"].size(1)
 
-            full_instruction_with_bos = self.decoder_tokenizer.bos_token + instruction
+                x1_with_prefix = instruction_prefix + x1 + " "
+                x1_tokenized = self.decoder_tokenizer(
+                    x1_with_prefix,
+                    return_tensors="pt",
+                    add_special_tokens=False,
+                )
+                x1_end_len = x1_tokenized["input_ids"].size(1)
+                
+                full_instruction_with_bos = instruction
+
             full_tokenized = self.decoder_tokenizer(
                 full_instruction_with_bos,
                 truncation=True,
@@ -306,6 +353,9 @@ class COCOMPretrainCollator:
                 add_special_tokens=False,
             )
             input_ids = full_tokenized["input_ids"].squeeze(0)
+
+            if self.is_qwen and self.decoder_tokenizer.eos_token_id is not None:
+                input_ids = torch.cat([input_ids, torch.tensor([self.decoder_tokenizer.eos_token_id])])
 
             labels = [-100] * x1_end_len + input_ids[x1_end_len:].tolist()
 
@@ -527,8 +577,8 @@ def pretrain_cocom_two_stage(
     accelerator = Accelerator()
     accelerator.print("=" * 80)
     accelerator.print("COCOM Two-Stage Pretraining")
-    accelerator.print("Stage 1: Auto-encoding with Context Embeddings (Section 3.3.1)")
-    accelerator.print("Stage 2: Language Modeling from Context Embeddings (Section 3.3.2)")
+    accelerator.print("Stage 1: Auto-encoding with Context Embeddings")
+    accelerator.print("Stage 2: Language Modeling from Context Embeddings")
     accelerator.print("=" * 80)
     accelerator.print("Initializing COCOM model...")
 
@@ -631,7 +681,7 @@ def main() -> None:
     parser.add_argument(
         "--quantization",
         type=str,
-        default="no",
+        default="int4",
         choices=["no", "int4", "int8"],
         help="Quantization mode for the decoder.",
     )
@@ -695,7 +745,7 @@ def main() -> None:
     parser.add_argument(
         "--batch_size",
         type=int,
-        default=256,
+        default=16,
         help="Per-device batch size.",
     )
     parser.add_argument(
