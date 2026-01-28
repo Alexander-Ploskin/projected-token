@@ -39,7 +39,9 @@ def save_projector_ckpt(model, path: str) -> None:
     torch.save(model.projector.state_dict(), path)
 
 
-def load_projector_checkpoint(model, path: str, *, map_location: str = "cpu") -> None:
+def load_projector_checkpoint(model, path: str, *, map_location: str = "cpu", projector_ckpt_name: str = "projector.pt") -> None:
+    if os.path.isdir(path):
+        path = os.path.join(path, projector_ckpt_name)
     sd = torch.load(path, map_location=map_location)
     # strict=True here is good because you're loading exactly the projector module
     model.projector.load_state_dict(sd, strict=True)

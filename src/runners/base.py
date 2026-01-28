@@ -3,6 +3,8 @@ from __future__ import annotations
 import math
 import torch
 import time
+import re
+import os
 from typing import Optional
 from accelerate.utils import tqdm
 from accelerate.logging import get_logger
@@ -96,8 +98,21 @@ class TrainRunner:
         if projector_checkpoint_path is not None:
             t0 = time.time()
             logger.info(f"Loading projector checkpoint: {projector_checkpoint_path}", main_process_only=True)
-            load_projector_checkpoint(model, projector_checkpoint_path)
+            load_projector_checkpoint(model, projector_checkpoint_path, projector_ckpt_name=cfg.train.projector_ckpt_name)
             logger.info(f"Projector checkpoint loaded in {time.time()-t0:.2f}s", main_process_only=True)
+
+        # --- resumption state ---
+        initial_step = 0
+        if cfg.train.resume_step is not None:
+            initial_step = cfg.train.resume_step
+        elif projector_checkpoint_path is not None:
+            # Try to parse from path e.g. runs/pretrain/checkpoint-100 or runs/pretrain/checkpoint-100/projector.pt
+            match = re.search(r"checkpoint-(\d+)", projector_checkpoint_path)
+            if match:
+                initial_step = int(match.group(1))
+
+        if initial_step > 0:
+            logger.info(f"Resumption configured | starting from step {initial_step}", main_process_only=True)
 
         # --- freezing ---
         if cfg.model.freeze_llm:
@@ -178,6 +193,16 @@ class TrainRunner:
         )
 
         global_step = 0
+        micro_step = 0
+        batches_to_skip = initial_step * cfg.distributed.gradient_accumulation_steps
+
+        if initial_step > 0:
+            logger.info(f"Fast-forwarding scheduler and progress to step {initial_step}...", main_process_only=True)
+            for _ in range(initial_step):
+                scheduler.step()
+            progress.update(initial_step)
+            global_step = initial_step
+
         rolling = {"loss": 0.0, "nll": 0.0, "kl": 0.0, "nll_sum": 0.0, "ntokens": 0.0}
         eval_rolling = {"nll_sum": 0.0, "ntokens": 0.0}
 
@@ -186,6 +211,11 @@ class TrainRunner:
             logger.info(f"Epoch {epoch+1}/{cfg.train.num_train_epochs} start", main_process_only=True)
 
             for batch in train_loader:
+                if micro_step < batches_to_skip:
+                    micro_step += 1
+                    continue
+                
+                micro_step += 1
                 with acc.accumulate(model):
                     retrieval_kwargs = {}
                     if retriever is not None:

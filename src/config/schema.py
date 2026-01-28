@@ -79,6 +79,7 @@ class DataConfig:
 class TrainConfig:
     seed: int = 1234
     output_dir: str = "./runs/pretrain"
+    resume_step: Optional[int] = None
     per_device_train_batch_size: int = 2
     per_device_eval_batch_size: int = 2
 
