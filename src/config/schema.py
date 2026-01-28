@@ -67,6 +67,7 @@ class DataConfig:
     overwrite_cache: bool = False
     max_seq_length: int = 336
     retrieval_embed_length: int = 1
+    dataloader_num_workers: int = 0  # NEW: performance improvement
 
     # finetune (messages-only compression) knobs
     finetune_context_source: str = "all_user"  # "first_user" | "all_user"

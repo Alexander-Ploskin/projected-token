@@ -193,11 +193,16 @@ class TrainRunner:
         )
 
         global_step = 0
-        micro_step = 0
-        batches_to_skip = initial_step * cfg.distributed.gradient_accumulation_steps
-
+        
+        # Calculate resumption epoch and step within epoch
+        resume_epoch = 0
+        resume_step_in_epoch = 0
         if initial_step > 0:
-            logger.info(f"Fast-forwarding scheduler and progress to step {initial_step}...", main_process_only=True)
+            resume_epoch = initial_step // steps_per_epoch
+            resume_step_in_epoch = initial_step % steps_per_epoch
+            
+            logger.info(f"Resumption: skipping to epoch {resume_epoch} step {resume_step_in_epoch}", main_process_only=True)
+            logger.info(f"Fast-forwarding scheduler and progress to global step {initial_step}...", main_process_only=True)
             for _ in range(initial_step):
                 scheduler.step()
             progress.update(initial_step)
@@ -207,15 +212,22 @@ class TrainRunner:
         eval_rolling = {"nll_sum": 0.0, "ntokens": 0.0}
 
         for epoch in range(cfg.train.num_train_epochs):
+            if epoch < resume_epoch:
+                continue
+
             model.train()
             logger.info(f"Epoch {epoch+1}/{cfg.train.num_train_epochs} start", main_process_only=True)
 
-            for batch in train_loader:
-                if micro_step < batches_to_skip:
-                    micro_step += 1
-                    continue
-                
-                micro_step += 1
+            # Efficiently skip batches in the current epoch if needed
+            if epoch == resume_epoch and resume_step_in_epoch > 0:
+                batches_to_skip_in_epoch = resume_step_in_epoch * cfg.distributed.gradient_accumulation_steps
+                logger.info(f"Skipping first {batches_to_skip_in_epoch} micro-batches in this epoch...", main_process_only=True)
+                active_loader = acc.skip_first_batches(train_loader, batches_to_skip_in_epoch)
+                logger.info(f"Active loader (after skipping) has {len(active_loader)} batches and will be ready in a few minutes", main_process_only=True)
+            else:
+                active_loader = train_loader
+
+            for batch in active_loader:
                 with acc.accumulate(model):
                     retrieval_kwargs = {}
                     if retriever is not None:
