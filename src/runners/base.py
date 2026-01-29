@@ -314,7 +314,12 @@ class TrainRunner:
 
                 # periodic eval
                 if dev_loader is not None and self.validate_fn is not None and global_step % cfg.train.eval_every_steps == 0:
-                    logger.info(f"Running dev eval at step={global_step} ...", main_process_only=True)
+                    logger.info(
+                        f"Running dev eval at step={global_step} on device={acc.device}... "
+                        f"Model device={next(model.parameters()).device} "
+                        f"Retriever device={next(retriever.parameters()).device if retriever is not None else 'N/A'}",
+                        main_process_only=True
+                    )
                     metric = self.validate_fn(acc, model, retriever, dev_loader)
                     if acc.is_main_process:
                         # Synchronize training metrics for accurate PPL
