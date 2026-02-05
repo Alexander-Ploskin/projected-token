@@ -5,7 +5,7 @@ from evaluation.models import Model
 
 
 class OscarModel(Model):
-    DEFAULT_PROMPT_TEMPLATE = "Could you give me a different version of the background sentences above?"
+    DEFAULT_PROMPT_TEMPLATE = "Provide a paraphrase of the background sentences (background document context). Provide only the paraphrased text, no other text or formatting. Keep the meaning and all facts intact."
     default_prompt_template = DEFAULT_PROMPT_TEMPLATE
 
     def __init__(self, **kwargs) -> None:

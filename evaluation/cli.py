@@ -8,7 +8,7 @@ from datetime import datetime
 import random
 
 
-PROMPT_TEMPLATE = "Background: {document} Could you give me a different version of the background sentences above?"
+PROMPT_TEMPLATE = "Background: {document} Provide a paraphrase of the background sentences (background document context). Provide only the paraphrased text, no other text or formatting. Keep the meaning and all facts intact."
 
 # Factory function to instantiate classes from config
 def instantiate_class(class_config: Dict[str, Any], class_type: str = "class") -> Any:
@@ -115,9 +115,9 @@ def paraphrase(config, input_path, output_path, text_col, output_col, verbose):
             
             document = item.get(text_col, '')
             
-            if not document:
+            if not document or not isinstance(document, str):
                 if verbose:
-                    log_step(f"Skipping item {i}: missing text column '{text_col}'", "warning")
+                    log_step(f"Skipping item {i}: missing text column '{text_col}' or not a string.\nDocument: `{document}`", "warning")
                 error_count += 1
                 continue
             

@@ -7,7 +7,7 @@ from evaluation.models import Model
 
 
 class XRAGModel(Model):
-    DEFAULT_PROMPT_TEMPLATE = "Background: {document} Could you give me a different version of the background sentences above?"
+    DEFAULT_PROMPT_TEMPLATE = "Background: {document}\n Provide a paraphrase of the background sentences (background document context). Provide only the paraphrased text, no other text or formatting. Keep the meaning and all facts intact."
     default_prompt_template = DEFAULT_PROMPT_TEMPLATE
 
     def __init__(self, **kwargs) -> None:
