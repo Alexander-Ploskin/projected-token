@@ -8,7 +8,7 @@ from datetime import datetime
 import random
 
 
-PROMPT_TEMPLATE = "Background: {xrag_token} Could you give me a different version of the background sentences above?"
+PROMPT_TEMPLATE = "Background: {document} Could you give me a different version of the background sentences above?"
 
 # Factory function to instantiate classes from config
 def instantiate_class(class_config: Dict[str, Any], class_type: str = "class") -> Any:
@@ -102,7 +102,10 @@ def paraphrase(config, input_path, output_path, text_col, output_col, verbose):
         processed_count = 0
         error_count = 0
         
+        max_i = 10
         for i, item in enumerate(dataset_instance):
+            if i > max_i:
+                break
             if verbose and i % 100 == 0:
                 log_substep(f"Processed {i} items...")
             
@@ -117,6 +120,8 @@ def paraphrase(config, input_path, output_path, text_col, output_col, verbose):
             try:
                 for i in range(int(experiment_config.get('sample_count', 1))):
                     rephrased = model(document, PROMPT_TEMPLATE, model_args)
+                    print('document: ', document)
+                    print('rephrased: ', rephrased)
                     output_data.append(item | {output_col: rephrased})
                     processed_count += 1
                     

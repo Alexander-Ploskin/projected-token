@@ -14,3 +14,5 @@ docker run -it --gpus all \
   projected-token-image \
   --help
 ```
+
+docker run -it --gpus all --rm  -v ~/.cache/huggingface:/workspace/data/hf_cache   -v $(pwd):/workspace -v ~/repos/xRAG/cache:/workspace/data/cache  -d --name ploskin-pt  ploskin-pt

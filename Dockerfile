@@ -38,6 +38,5 @@ RUN poetry install --no-root --only main
 COPY . .
 RUN mkdir -p /workspace/data
 ENV PYTHONPATH=.
+
 ENTRYPOINT ["tail", "-f", "/dev/null"]
-# ENTRYPOINT ["poetry", "run", "python", "evaluation/cli.py"]
-# CMD ["--help"]

@@ -6,8 +6,9 @@ dataset:
 model:
   class: evaluation.models.XRAGModel
   kwargs:
-    device: "cuda:0"
-    llm_name_or_path: "~/repos/xRAG/cache"
+    llm_device: "cuda:0"
+    retriever_device: "cuda:1"
+    llm_name_or_path: "data/cache"
     retriever_name_or_path: "Salesforce/SFR-Embedding-Mistral"
     xrag_token: "[XRAG]"
 
@@ -22,7 +23,7 @@ metrics:
 
 generation:
   do_sample: true
-  temperature: 0.7
+  temperature: 0.3
   max_new_tokens: 400
 
 experiment:
