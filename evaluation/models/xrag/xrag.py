@@ -7,6 +7,9 @@ from evaluation.models import Model
 
 
 class XRAGModel(Model):
+    DEFAULT_PROMPT_TEMPLATE = "Background: {document} Could you give me a different version of the background sentences above?"
+    default_prompt_template = DEFAULT_PROMPT_TEMPLATE
+
     def __init__(self, **kwargs) -> None:
         self._llm_device = torch.device(kwargs["llm_device"])
         llm_name_or_path = kwargs["llm_name_or_path"]

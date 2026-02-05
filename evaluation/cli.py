@@ -96,6 +96,13 @@ def paraphrase(config, input_path, output_path, text_col, output_col, verbose):
         experiment_config = config_data.get('experiment', {})
         log_substep(f"Experiment parameters: {experiment_config}")
 
+        prompt_template = (
+            experiment_config.get('prompt_template')
+            or getattr(model, 'default_prompt_template', None)
+            or PROMPT_TEMPLATE
+        )
+        log_substep(f"Prompt template: `{prompt_template}`")
+
         # Process data
         log_step("Processing data")
         output_data = []
@@ -118,10 +125,8 @@ def paraphrase(config, input_path, output_path, text_col, output_col, verbose):
                 continue
             
             try:
-                for i in range(int(experiment_config.get('sample_count', 1))):
-                    rephrased = model(document, PROMPT_TEMPLATE, model_args)
-                    print('document: ', document)
-                    print('rephrased: ', rephrased)
+                for _ in range(int(experiment_config.get('sample_count', 1))):
+                    rephrased = model(document, prompt_template, model_args)
                     output_data.append(item | {output_col: rephrased})
                     processed_count += 1
                     

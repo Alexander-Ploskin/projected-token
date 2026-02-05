@@ -1,0 +1,28 @@
+dataset:
+  class: evaluation.datasets.PopqaDataset
+  args:
+    - "s_wiki_content"
+
+model:
+  class: evaluation.models.oscar.oscar.OscarModel
+  kwargs:
+    model_name_or_path: "naver/oscar-qwen2-7B"
+    device: "cuda:0"
+    trust_remote_code: true
+
+metrics:
+  - class: evaluation.metrics.AlignScoreMetric
+    args:
+      model: roberta-base
+      batch_size: 32
+      device: cpu
+      ckpt_path: cache/align_score_checkpoint
+      eval_mode: nli_sp
+
+generation:
+  do_sample: true
+  temperature: 0.3
+  max_new_tokens: 400
+
+experiment:
+  sample_count: 3
