@@ -109,10 +109,7 @@ def paraphrase(config, input_path, output_path, text_col, output_col, verbose):
         processed_count = 0
         error_count = 0
         
-        max_i = 10
         for i, item in enumerate(dataset_instance):
-            if i > max_i:
-                break
             if verbose and i % 100 == 0:
                 log_substep(f"Processed {i} items...")
             
