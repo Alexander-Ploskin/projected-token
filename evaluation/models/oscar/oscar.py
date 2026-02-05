@@ -5,8 +5,16 @@ from evaluation.models import Model
 
 
 class OscarModel(Model):
-    DEFAULT_PROMPT_TEMPLATE = "Could you give me a different version of the background sentences above?"
-    default_prompt_template = DEFAULT_PROMPT_TEMPLATE
+    QA_DEFAULT_PROMPT_TEMPLATE = (
+"""Answer the Question concisely and completely, with no filler or explanation.
+Question: {question}
+Answer:
+"""
+)
+    
+    PARAPHRASE_DEFAULT_PROMPT_TEMPLATE = "Provide a paraphrase of the background sentences (background document context). Provide only the paraphrased text, no other text or formatting. Keep the meaning and all facts intact."
+    
+    default_prompt_template = QA_DEFAULT_PROMPT_TEMPLATE
 
     def __init__(self, **kwargs) -> None:
         device = torch.device(kwargs["device"])

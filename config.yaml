@@ -20,6 +20,12 @@ metrics:
       device: cpu
       ckpt_path: cache/align_score_checkpoint
       eval_mode: nli_sp
+  - class: evaluation.metrics.LLMJudgeMetric
+    kwargs:
+      base_url: "http://localhost:8000/v1"
+      api_key: "your-api-key"
+      model: "openai/gpt-oss-20b"
+      temperature: 0.0
 
 generation:
   do_sample: true

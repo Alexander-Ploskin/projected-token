@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import re
-from transformers import MistralForCausalLM, MistralConfig 
+from transformers import MistralForCausalLM,MistralConfig 
 
 
 class XMistralConfig(MistralConfig):
@@ -36,10 +36,6 @@ class Projector(nn.Module):
 class XMistralForCausalLM(MistralForCausalLM):
     def __init__(self,config):
         super().__init__(config)
-
-        print("CONFIG: ", config)
-        config = XMistralConfig()
-
         if hasattr(config,"retriever_hidden_size") and config.retriever_hidden_size > 0: 
             self.projector = Projector(config)
             self.retriever_hidden_size = config.retriever_hidden_size
@@ -126,4 +122,3 @@ class XMistralForCausalLM(MistralForCausalLM):
                 input_ids=input_ids,
                 **kwargs
             )
-    

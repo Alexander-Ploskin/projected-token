@@ -6,6 +6,17 @@ from evaluation.models.xrag.xmistral import XMistralForCausalLM
 
 
 class RAGModel(Model):
+    QA_PROMPT_TEMPLATE = (
+"""
+Answer the Question concisely and completely, with no filler or explanation.
+Document: {document}
+Question: {question}
+Answer:
+"""
+)
+    PARAPHRASE_PROMPT_TEMPLATE = "Background: {document}\n Provide a paraphrase of the background sentences (background document context). Provide only the paraphrased text, no other text or formatting. Keep the meaning and all facts intact."
+    default_prompt_template = QA_PROMPT_TEMPLATE
+
     def __init__(self, llm_name_or_path: str, device: str) -> None:
         self._device = torch.device(device)
         llm_name_or_path = llm_name_or_path
