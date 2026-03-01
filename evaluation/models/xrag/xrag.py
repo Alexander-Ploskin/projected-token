@@ -78,13 +78,31 @@ Answer:
         documents: List[str],
         prompt_template: Optional[str] = None,
         model_args: Optional[Dict] = None,
+        questions: Optional[List[str]] = None,
     ) -> List[str]:
+        """Generate answers for a batch of documents.
+
+        Args:
+            documents: List of document texts to process
+            prompt_template: Template with {document} and optionally {question} placeholders
+            model_args: Generation arguments (do_sample, temperature, max_new_tokens, etc.)
+            questions: Optional list of questions (for QA tasks). If provided, uses QA prompt template.
+
+        Returns:
+            List of generated answers
+        """
         if model_args is None:
             model_args = {}
         if prompt_template is None:
             prompt_template = self.default_prompt_template
 
-        self._ensure_cached_prompt(prompt_template)
+        # If questions provided, use QA prompt template
+        if questions is not None:
+            # Cache QA prompt template
+            qa_template = prompt_template if prompt_template else self.QA_PROMPT_TEMPLATE
+            self._ensure_cached_prompt(qa_template)
+        else:
+            self._ensure_cached_prompt(prompt_template)
 
         # 1) Batched retriever embeddings
         retr_enc = self._retriever_tokenizer(

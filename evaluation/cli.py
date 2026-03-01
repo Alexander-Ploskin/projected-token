@@ -144,11 +144,18 @@ def _process_task(config, input_path, output_path, text_col, output_col, verbose
                     if task_type == "paraphrase":
                         outputs = model.generate_batch(docs_expanded, prompt_template, model_args)
                     else:  # QA task
-                        # For QA, we need to format prompts with both document and question
-                        formatted_prompts = []
-                        for doc, question in zip(docs_expanded, questions_expanded):
-                            formatted_prompts.append(prompt_template.format(document=doc, question=question))
-                        outputs = model.generate_batch(formatted_prompts, model_args)
+                        # For QA, pass documents and questions separately for models that support it (e.g., XRAG)
+                        # Falls back to formatted prompts for models that don't support questions param
+                        import inspect
+                        sig = inspect.signature(model.generate_batch)
+                        if 'questions' in sig.parameters:
+                            outputs = model.generate_batch(docs_expanded, prompt_template, model_args, questions=questions_expanded)
+                        else:
+                            # Fallback: format prompts manually
+                            formatted_prompts = []
+                            for doc, question in zip(docs_expanded, questions_expanded):
+                                formatted_prompts.append(prompt_template.format(document=doc, question=question))
+                            outputs = model.generate_batch(formatted_prompts, "", model_args)
                     
                     if len(outputs) != len(items_expanded):
                         raise RuntimeError(
@@ -241,7 +248,7 @@ def _process_task(config, input_path, output_path, text_col, output_col, verbose
                     continue
                 
                 try:
-                    sample_count = int(experiment_config.get('sample_count', case))
+                    sample_count = int(experiment_config.get('sample_count', 1))
                     for _ in range(sample_count):
                         if task_type == "paraphrase":
                             formatted_prompt = prompt_template.format(document=document)
@@ -305,10 +312,11 @@ def paraphrase(config, input_path, output_path, text_col, output_col, batch_size
 @click.option('--input-path', required=True, help='Input dataset path with questions')
 @click.option('--output-path', required=True, help='Output file path with answers')
 @click.option('--text-col', default='text', help='Column name for context text')
+@click.option('--batch-size', default=None, type=int, help='Batch size for model inference (None for single item)')
 @click.option('--verbose', '-v', is_flag=True, help='Enable verbose output')
-def qa(config, input_path, output_path, text_col, verbose):
+def qa(config, input_path, output_path, text_col, batch_size, verbose):
     """Answer questions using a model and save results."""
-    _process_task(config, input_path, output_path, text_col, 'answer', verbose, "qa", None)
+    _process_task(config, input_path, output_path, text_col, 'answer', verbose, "qa", batch_size)
 
 @cli.command()
 @click.option('--config', required=True, help='Path to YAML configuration file')
