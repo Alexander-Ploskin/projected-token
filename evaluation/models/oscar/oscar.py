@@ -18,15 +18,18 @@ Answer:
     default_prompt_template = QA_DEFAULT_PROMPT_TEMPLATE
 
     def __init__(self, **kwargs) -> None:
-        device = torch.device(kwargs["device"])
+        device = kwargs.get("device", "cuda:0")
         model_name_or_path = kwargs["model_name_or_path"]
         torch_dtype = kwargs.get("torch_dtype", torch.bfloat16)
         trust_remote_code = kwargs.get("trust_remote_code", True)
+
+        # Use device_map for proper loading with meta tensors
         self._model = AutoModel.from_pretrained(
             model_name_or_path,
             torch_dtype=torch_dtype,
             trust_remote_code=trust_remote_code,
-        ).to(device).eval()
+            device_map=device,
+        ).eval()
 
     # OSCAR's generate_from_compressed_documents_and_questions does not accept HF-style
     # kwargs like do_sample/temperature; only pass whitelisted args.

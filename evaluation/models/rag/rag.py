@@ -16,6 +16,7 @@ Answer:
 """
 )
     PARAPHRASE_PROMPT_TEMPLATE = "Background: {document}\n Provide a paraphrase of the background sentences (background document context). Provide only the paraphrased text, no other text or formatting. Keep the meaning and all facts intact."
+    PARAPHRASE_DEFAULT_PROMPT_TEMPLATE = PARAPHRASE_PROMPT_TEMPLATE  # Alias for CLI
     default_prompt_template = QA_PROMPT_TEMPLATE
 
     def __init__(self, llm_name_or_path: str, device: str) -> None:

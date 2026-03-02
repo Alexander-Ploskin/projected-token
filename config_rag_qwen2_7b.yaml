@@ -1,0 +1,14 @@
+dataset:
+  class: evaluation.datasets.PopqaDataset
+experiment:
+  sample_count: 1
+generation:
+  do_sample: true
+  max_new_tokens: 512
+  temperature: 0.3
+model:
+  class: evaluation.models.SimpleLLM
+  kwargs:
+    device: cuda:0
+    model_name_or_path: Qwen/Qwen2-7B-Instruct
+    use_chat_template: true

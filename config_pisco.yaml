@@ -2,9 +2,9 @@ dataset:
   class: evaluation.datasets.PopqaDataset
 
 model:
-  class: evaluation.models.OscarModel
+  class: evaluation.models.PiscoModel
   kwargs:
-    model_name_or_path: "naver/oscar-qwen2-7B"
+    model_name_or_path: "naver/pisco-mistral"
     device: "cuda:0"
     trust_remote_code: true
 
