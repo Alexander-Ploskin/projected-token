@@ -6,6 +6,9 @@ import sys
 import traceback
 from datetime import datetime
 from tqdm import tqdm
+import numpy as np
+from difflib import SequenceMatcher
+from pathlib import Path
 
 # Factory function to instantiate classes from config
 def instantiate_class(class_config: Dict[str, Any], class_type: str = "class") -> Any:
@@ -48,6 +51,63 @@ def log_step(message: str, level: str = "info"):
 def log_substep(message: str):
     """Log a substep with indentation."""
     click.echo(click.style("  ↳ ", fg="blue") + message)
+
+
+# Simple metrics functions (from evaluate_gpt_judge_only.py)
+def simple_tokenize(text: str):
+    """Simple tokenization by splitting on whitespace."""
+    return text.lower().split()
+
+
+def jaccard_similarity(set1: set, set2: set) -> float:
+    """Calculate Jaccard similarity between two sets."""
+    if not set1 or not set2:
+        return 0.0
+    return len(set1 & set2) / len(set1 | set2)
+
+
+def calculate_simple_metrics(originals: List[str], paraphrases: List[str]) -> Dict[str, float]:
+    """Calculate simple text similarity metrics."""
+    results = []
+
+    for orig, para in zip(originals, paraphrases):
+        if not orig.strip() or not para.strip():
+            continue
+
+        orig_tokens = set(simple_tokenize(orig))
+        para_tokens = set(simple_tokenize(para))
+
+        jaccard = jaccard_similarity(orig_tokens, para_tokens)
+        char_sim = SequenceMatcher(None, orig.lower(), para.lower()).ratio()
+        word_overlap = len(orig_tokens & para_tokens) / max(len(orig_tokens), 1)
+        orig_len = len(orig.split())
+        para_len = len(para.split())
+        length_ratio = para_len / max(orig_len, 1)
+
+        results.append({
+            'jaccard': jaccard,
+            'char_sim': char_sim,
+            'word_overlap': word_overlap,
+            'length_ratio': length_ratio
+        })
+
+    if not results:
+        return {}
+
+    avg_metrics = {}
+    for key in ['jaccard', 'char_sim', 'word_overlap', 'length_ratio']:
+        avg_metrics[f'avg_{key}'] = float(np.mean([r[key] for r in results]))
+
+    return avg_metrics
+
+
+def load_jsonl(path: str) -> List[Dict[str, Any]]:
+    """Load JSONL file."""
+    data = []
+    with open(path, 'r', encoding='utf-8') as f:
+        for line in f:
+            data.append(json.loads(line.strip()))
+    return data
 
 # Click CLI
 @click.group()
@@ -409,6 +469,426 @@ def evaluate_paraphrase(config, input_path, output_path, original_col, rephrased
         log_substep(f"Errors: {error_count} items")
         log_substep(f"Output: {output_path}")
         
+    except Exception as e:
+        log_step(f"Fatal error: {str(e)}", "error")
+        if verbose:
+            click.echo(click.style("Stack trace:", fg="red"))
+            click.echo(traceback.format_exc())
+        sys.exit(1)
+
+# =============================================================================
+# GPT Judge Evaluation Command
+# =============================================================================
+
+@cli.command()
+@click.option('--input-path', required=True, help='Path to JSONL file with paraphrases')
+@click.option('--output', '-o', required=True, help='Output path for metrics JSON')
+@click.option('--base-url', default='http://localhost:8000/v1', help='vLLM API base URL')
+@click.option('--api-key', default='dummy', help='API key (can be dummy for local)')
+@click.option('--model', default='Qwen/Qwen3.5-27B', help='Model name for judge')
+@click.option('--batch-size', type=int, default=10, help='Batch size for GPT Judge')
+@click.option('--original-col', default='s_wiki_content', help='Column name for original text')
+@click.option('--rephrased-col', default='rephrased_text', help='Column name for paraphrased text')
+@click.option('--verbose', '-v', is_flag=True, help='Enable verbose output')
+def eval_gpt(input_path, output, base_url, api_key, model, batch_size, original_col, rephrased_col, verbose):
+    """Evaluate paraphrases using GPT Judge and simple metrics."""
+    from openai import OpenAI
+    import instructor
+    from pydantic import BaseModel, Field, confloat
+    from enum import Enum
+
+    class Label(str, Enum):
+        supported = "supported"
+        partially_supported = "partially_supported"
+        contradicted = "contradicted"
+        unknown = "unknown"
+
+    class FactualityVerdict(BaseModel):
+        supported_claims: List[str] = Field(default_factory=list)
+        contradicted_claims: List[str] = Field(default_factory=list)
+        not_in_reference: List[str] = Field(default_factory=list)
+        rationale: str = Field(description="Brief explanation")
+        score: confloat(ge=0.0, le=1.0) = Field(description="0..1 factual consistency")
+        label: Label
+
+    class VerdictWithId(FactualityVerdict):
+        id: int = Field(description="Must match the input case id")
+
+    class BatchVerdicts(BaseModel):
+        verdicts: List[VerdictWithId]
+
+    SYSTEM_PROMPT = """You are a strict factual consistency judge.
+
+You will be given a JSON array called "cases".
+Each case has:
+- id (int)
+- candidate (Text A)
+- reference (Text B)
+
+Task:
+- For each case, compare candidate against reference.
+- Judge whether the factual statements in candidate are supported by reference.
+
+Rubric:
+- supported: All factual claims in A are supported by B.
+- partially_supported: Most claims supported, but A has minor unsupported/ambiguous parts.
+- contradicted: Any clear factual contradiction between A and B.
+- unknown: B lacks enough info to assess most claims in A.
+
+Guidelines:
+- Treat reference as the only ground truth.
+- If A adds details not present in B, list them under not_in_reference.
+- If A conflicts with B, list conflicts under contradicted_claims.
+- Keep claims short and atomic when listing.
+- Return one verdict per input case.
+
+Return only the structured output with:
+{ "verdicts": [ ... ] }"""
+
+    log_step("Starting GPT Judge evaluation", "start")
+
+    try:
+        # Load data
+        log_step("Loading input data")
+        data = load_jsonl(input_path)
+        log_substep(f"Loaded {len(data)} items from {input_path}")
+
+        # Extract originals and paraphrases
+        originals = [d.get(original_col, '') for d in data]
+        paraphrases = [d.get(rephrased_col, '') for d in data]
+
+        # Filter valid pairs
+        valid_indices = [i for i in range(len(data)) if originals[i].strip() and paraphrases[i].strip()]
+        originals = [originals[i] for i in valid_indices]
+        paraphrases = [paraphrases[i] for i in valid_indices]
+
+        log_substep(f"{len(originals)} valid paraphrase pairs")
+
+        # Calculate simple metrics
+        log_step("Calculating simple metrics")
+        simple_metrics = calculate_simple_metrics(originals, paraphrases)
+        log_substep(f"avg_jaccard: {simple_metrics.get('avg_jaccard', 0):.4f}")
+        log_substep(f"avg_char_sim: {simple_metrics.get('avg_char_sim', 0):.4f}")
+        log_substep(f"avg_word_overlap: {simple_metrics.get('avg_word_overlap', 0):.4f}")
+        log_substep(f"avg_length_ratio: {simple_metrics.get('avg_length_ratio', 0):.4f}")
+
+        # Initialize GPT Judge
+        log_step(f"Initializing GPT Judge (model: {model})")
+        raw_client = OpenAI(base_url=base_url, api_key=api_key)
+        client = instructor.patch(raw_client, mode=instructor.Mode.JSON)
+
+        # Run GPT Judge
+        log_step(f"Running GPT Judge (batch_size={batch_size})")
+        all_scores = []
+        all_labels = []
+
+        for i in tqdm(range(0, len(originals), batch_size), desc="GPT Judge batches"):
+            batch_end = min(i + batch_size, len(originals))
+            batch_refs = originals[i:batch_end]
+            batch_cands = paraphrases[i:batch_end]
+
+            cases = [{"id": j, "candidate": cand, "reference": ref}
+                     for j, (cand, ref) in enumerate(zip(batch_cands, batch_refs))]
+
+            try:
+                response: BatchVerdicts = client.chat.completions.create(
+                    model=model,
+                    temperature=0.0,
+                    response_model=BatchVerdicts,
+                    messages=[
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "user", "content": json.dumps({"cases": cases}, ensure_ascii=False)},
+                    ],
+                )
+
+                for verdict in response.verdicts:
+                    score = float(verdict.score)
+                    if score >= 0:
+                        all_scores.append(score)
+                        all_labels.append(verdict.label.value)
+
+            except Exception as e:
+                log_step(f"Batch {i // batch_size} failed: {e}", "warning")
+                # Add error scores
+                for _ in range(len(batch_cands)):
+                    all_scores.append(-1.0)
+
+        # Calculate GPT metrics
+        valid_scores = [s for s in all_scores if s >= 0]
+        if valid_scores:
+            log_step("GPT Judge Results")
+            log_substep(f"avg_gpt_judge_score: {np.mean(valid_scores):.4f}")
+            log_substep(f"std_gpt_judge_score: {np.std(valid_scores):.4f}")
+            log_substep(f"min_gpt_judge_score: {np.min(valid_scores):.4f}")
+            log_substep(f"max_gpt_judge_score: {np.max(valid_scores):.4f}")
+
+            label_counts = {}
+            for label in all_labels:
+                label_counts[label] = label_counts.get(label, 0) + 1
+            log_substep("Label distribution:")
+            for label, count in sorted(label_counts.items()):
+                log_substep(f"  {label}: {count} ({100*count/len(all_labels):.1f}%)")
+
+            gpt_metrics = {
+                'avg_gpt_judge_score': float(np.mean(valid_scores)),
+                'std_gpt_judge_score': float(np.std(valid_scores)),
+                'min_gpt_judge_score': float(np.min(valid_scores)),
+                'max_gpt_judge_score': float(np.max(valid_scores)),
+                'label_distribution': label_counts
+            }
+        else:
+            log_step("ERROR: No valid GPT scores obtained", "error")
+            gpt_metrics = {'error': 'No valid scores'}
+
+        # Combine all metrics
+        all_metrics = {**simple_metrics, **gpt_metrics}
+
+        # Save results
+        log_step("Saving metrics")
+        with open(output, 'w') as f:
+            json.dump(all_metrics, f, indent=2)
+        log_substep(f"Saved to {output}")
+
+        log_step("GPT Judge evaluation completed!", "success")
+
+    except Exception as e:
+        log_step(f"Fatal error: {str(e)}", "error")
+        if verbose:
+            click.echo(click.style("Stack trace:", fg="red"))
+            click.echo(traceback.format_exc())
+        sys.exit(1)
+
+
+# =============================================================================
+# Run Experiment Command (paraphrase + eval-gpt)
+# =============================================================================
+
+@cli.command()
+@click.option('--config', required=True, help='Path to YAML configuration file')
+@click.option('--input-path', required=True, help='Input dataset path')
+@click.option('--output-dir', required=True, help='Output directory for results')
+@click.option('--text-col', default='s_wiki_content', help='Column name for input text')
+@click.option('--batch-size', type=int, default=5, help='Batch size for model inference')
+@click.option('--gpt-base-url', default='http://localhost:8000/v1', help='vLLM API base URL for GPT Judge')
+@click.option('--gpt-model', default='Qwen/Qwen3.5-27B', help='Model name for GPT Judge')
+@click.option('--gpt-batch-size', type=int, default=10, help='Batch size for GPT Judge')
+@click.option('--verbose', '-v', is_flag=True, help='Enable verbose output')
+def run_experiment(config, input_path, output_dir, text_col, batch_size, gpt_base_url, gpt_model, gpt_batch_size, verbose):
+    """Run a full experiment: paraphrase + GPT Judge evaluation."""
+    import subprocess
+    from datetime import datetime
+
+    log_step("Starting full experiment", "start")
+
+    try:
+        # Create output directory
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+        log_substep(f"Output directory: {output_path}")
+
+        # Get model name from config for output filenames
+        with open(config, 'r') as f:
+            config_data = yaml.safe_load(f)
+        model_class = config_data.get('model', {}).get('class', 'unknown')
+        model_name = model_class.split('.')[-1].replace('Model', '').lower()
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        paraphrase_output = output_path / f"{model_name}_paraphrase_{timestamp}.jsonl"
+        metrics_output = output_path / f"{model_name}_metrics_{timestamp}.json"
+
+        log_substep(f"Model: {model_name}")
+        log_substep(f"Paraphrase output: {paraphrase_output}")
+        log_substep(f"Metrics output: {metrics_output}")
+
+        # Step 1: Run paraphrase
+        log_step("Step 1: Running paraphrase")
+        paraphrase_cmd = [
+            sys.executable, '-m', 'evaluation.cli', 'paraphrase',
+            '--config', str(config),
+            '--input-path', str(input_path),
+            '--output-path', str(paraphrase_output),
+            '--text-col', text_col,
+            '--batch-size', str(batch_size),
+        ]
+        if verbose:
+            paraphrase_cmd.append('--verbose')
+
+        result = subprocess.run(paraphrase_cmd)
+        if result.returncode != 0:
+            log_step("Paraphrase failed!", "error")
+            sys.exit(1)
+        log_step("Paraphrase completed!", "success")
+
+        # Step 2: Run GPT Judge evaluation
+        log_step("Step 2: Running GPT Judge evaluation")
+        eval_cmd = [
+            sys.executable, '-m', 'evaluation.cli', 'eval-gpt',
+            '--input-path', str(paraphrase_output),
+            '--output', str(metrics_output),
+            '--base-url', gpt_base_url,
+            '--model', gpt_model,
+            '--batch-size', str(gpt_batch_size),
+            '--original-col', text_col,
+            '--rephrased-col', 'rephrased_text',
+        ]
+        if verbose:
+            eval_cmd.append('--verbose')
+
+        result = subprocess.run(eval_cmd)
+        if result.returncode != 0:
+            log_step("GPT Judge evaluation failed!", "error")
+            sys.exit(1)
+        log_step("GPT Judge evaluation completed!", "success")
+
+        log_step("Full experiment completed!", "success")
+        log_substep(f"Paraphrase: {paraphrase_output}")
+        log_substep(f"Metrics: {metrics_output}")
+
+    except Exception as e:
+        log_step(f"Fatal error: {str(e)}", "error")
+        if verbose:
+            click.echo(click.style("Stack trace:", fg="red"))
+            click.echo(traceback.format_exc())
+        sys.exit(1)
+
+
+# =============================================================================
+# Run All Experiments Command
+# =============================================================================
+
+@cli.command()
+@click.option('--configs-dir', default='configs', help='Directory containing config files')
+@click.option('--input-path', required=True, help='Input dataset path')
+@click.option('--output-dir', required=True, help='Output directory for results')
+@click.option('--text-col', default='s_wiki_content', help='Column name for input text')
+@click.option('--batch-size', type=int, default=5, help='Batch size for model inference')
+@click.option('--gpt-base-url', default='http://localhost:8000/v1', help='vLLM API base URL for GPT Judge')
+@click.option('--gpt-model', default='Qwen/Qwen3.5-27B', help='Model name for GPT Judge')
+@click.option('--gpt-batch-size', type=int, default=10, help='Batch size for GPT Judge')
+@click.option('--verbose', '-v', is_flag=True, help='Enable verbose output')
+@click.option('--config-filter', default=None, help='Optional regex filter for config files')
+def run_all(configs_dir, input_path, output_dir, text_col, batch_size, gpt_base_url, gpt_model, gpt_batch_size, verbose, config_filter):
+    """Run all experiments for all configs in the configs directory."""
+    import subprocess
+    import re
+    from datetime import datetime
+
+    log_step("Starting ALL experiments", "start")
+
+    try:
+        # Find all config files
+        configs_path = Path(configs_dir)
+        if not configs_path.exists():
+            log_step(f"Configs directory not found: {configs_path}", "error")
+            sys.exit(1)
+
+        config_files = sorted(configs_path.glob("*.yaml"))
+        if config_filter:
+            pattern = re.compile(config_filter)
+            config_files = [f for f in config_files if pattern.search(f.name)]
+
+        if not config_files:
+            log_step("No config files found!", "error")
+            sys.exit(1)
+
+        log_substep(f"Found {len(config_files)} config files")
+
+        # Create output directory
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+
+        # Track results
+        results = {}
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        for config_file in config_files:
+            log_step(f"Processing: {config_file.name}", "start")
+
+            try:
+                # Get model name from config
+                with open(config_file, 'r') as f:
+                    config_data = yaml.safe_load(f)
+                model_class = config_data.get('model', {}).get('class', 'unknown')
+                model_name = model_class.split('.')[-1].replace('Model', '').lower()
+
+                model_output_dir = output_path / model_name
+                model_output_dir.mkdir(parents=True, exist_ok=True)
+
+                paraphrase_output = model_output_dir / f"{model_name}_paraphrase_{timestamp}.jsonl"
+                metrics_output = model_output_dir / f"{model_name}_metrics_{timestamp}.json"
+
+                # Run paraphrase
+                paraphrase_cmd = [
+                    sys.executable, '-m', 'evaluation.cli', 'paraphrase',
+                    '--config', str(config_file),
+                    '--input-path', str(input_path),
+                    '--output-path', str(paraphrase_output),
+                    '--text-col', text_col,
+                    '--batch-size', str(batch_size),
+                ]
+                if verbose:
+                    paraphrase_cmd.append('--verbose')
+
+                result = subprocess.run(paraphrase_cmd)
+                paraphrase_success = result.returncode == 0
+
+                if not paraphrase_success:
+                    log_step(f"Paraphrase failed for {model_name}", "error")
+                    results[model_name] = {"paraphrase": False, "gpt_judge": False, "error": "paraphrase_failed"}
+                    continue
+
+                # Run GPT Judge
+                eval_cmd = [
+                    sys.executable, '-m', 'evaluation.cli', 'eval-gpt',
+                    '--input-path', str(paraphrase_output),
+                    '--output', str(metrics_output),
+                    '--base-url', gpt_base_url,
+                    '--model', gpt_model,
+                    '--batch-size', str(gpt_batch_size),
+                    '--original-col', text_col,
+                    '--rephrased-col', 'rephrased_text',
+                ]
+                if verbose:
+                    eval_cmd.append('--verbose')
+
+                result = subprocess.run(eval_cmd)
+                gpt_success = result.returncode == 0
+
+                if not gpt_success:
+                    log_step(f"GPT Judge failed for {model_name}", "error")
+                    results[model_name] = {"paraphrase": True, "gpt_judge": False, "error": "gpt_judge_failed"}
+                    continue
+
+                results[model_name] = {"paraphrase": True, "gpt_judge": True, "metrics_file": str(metrics_output)}
+                log_step(f"Completed {model_name} successfully!", "success")
+
+            except Exception as e:
+                log_step(f"Error processing {config_file.name}: {e}", "error")
+                results[model_name] = {"paraphrase": False, "gpt_judge": False, "error": str(e)}
+
+        # Summary
+        log_step("=" * 50, "info")
+        log_step("SUMMARY", "start")
+        log_step("=" * 50, "info")
+
+        for model_name, status in results.items():
+            paraphrase_status = "✅" if status["paraphrase"] else "❌"
+            gpt_status = "✅" if status["gpt_judge"] else "❌"
+            log_step(f"{model_name}: Paraphrase {paraphrase_status}, GPT Judge {gpt_status}")
+
+        all_success = all(v["paraphrase"] and v["gpt_judge"] for v in results.values())
+
+        # Save summary
+        summary_file = output_path / f"summary_{timestamp}.json"
+        with open(summary_file, 'w') as f:
+            json.dump(results, f, indent=2)
+        log_substep(f"Summary saved to: {summary_file}")
+
+        log_step(f"Overall: {'✅ ALL SUCCESS' if all_success else '❌ SOME FAILED'}")
+
+        if not all_success:
+            sys.exit(1)
+
     except Exception as e:
         log_step(f"Fatal error: {str(e)}", "error")
         if verbose:
