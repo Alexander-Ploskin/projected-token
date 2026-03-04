@@ -1,5 +1,6 @@
 import click
 import yaml
+import re
 from typing import Dict, Any, List, Optional
 import json
 import sys
@@ -753,7 +754,327 @@ def run_experiment(config, input_path, output_dir, text_col, batch_size, gpt_bas
 
 
 # =============================================================================
-# Run All Experiments Command
+# Run QA Experiment Command (QA generation + QA evaluation)
+# =============================================================================
+
+@cli.command()
+@click.option('--config', required=True, help='Path to YAML configuration file')
+@click.option('--input-path', required=True, help='Input dataset path (PopQA parquet)')
+@click.option('--output-dir', required=True, help='Output directory for results')
+@click.option('--text-col', default='s_wiki_content', help='Column name for context text')
+@click.option('--question-col', default='question', help='Column name for questions')
+@click.option('--answer-col', default='possible_answers', help='Column name for ground truth answers')
+@click.option('--batch-size', type=int, default=5, help='Batch size for model inference')
+@click.option('--gpt-base-url', default='http://localhost:8000/v1', help='vLLM API base URL')
+@click.option('--gpt-api-key', default='dummy', help='API key for QA evaluation (can be dummy for local)')
+@click.option('--gpt-model', default='Qwen/Qwen3.5-27B', help='Model for QA evaluation')
+@click.option('--gpt-batch-size', type=int, default=10, help='Batch size for QA evaluation')
+@click.option('--verbose', '-v', is_flag=True, help='Enable verbose output')
+def run_qa_experiment(config, input_path, output_dir, text_col, question_col,
+                      answer_col, batch_size, gpt_base_url, gpt_api_key,
+                      gpt_model, gpt_batch_size, verbose):
+    """Run a full QA experiment: generate answers + LLM-based evaluation."""
+    import subprocess
+    from datetime import datetime
+
+    log_step("Starting QA experiment", "start")
+
+    try:
+        # Create output directory
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+        log_substep(f"Output directory: {output_path}")
+
+        # Get model name from config for output filenames
+        with open(config, 'r') as f:
+            config_data = yaml.safe_load(f)
+        model_class = config_data.get('model', {}).get('class', 'unknown')
+        model_name = model_class.split('.')[-1].replace('Model', '').lower()
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        qa_output = output_path / f"{model_name}_qa_answers_{timestamp}.jsonl"
+        metrics_output = output_path / f"{model_name}_qa_metrics_{timestamp}.json"
+
+        log_substep(f"Model: {model_name}")
+        log_substep(f"QA output: {qa_output}")
+        log_substep(f"Metrics output: {metrics_output}")
+
+        # Step 1: Run QA generation
+        log_step("Step 1: Running QA generation")
+        qa_cmd = [
+            sys.executable, '-m', 'evaluation.cli', 'qa',
+            '--config', str(config),
+            '--input-path', str(input_path),
+            '--output-path', str(qa_output),
+            '--text-col', text_col,
+            '--batch-size', str(batch_size),
+        ]
+        if verbose:
+            qa_cmd.append('--verbose')
+
+        result = subprocess.run(qa_cmd)
+        if result.returncode != 0:
+            log_step("QA generation failed!", "error")
+            sys.exit(1)
+        log_step("QA generation completed!", "success")
+
+        # Step 2: Run QA evaluation
+        log_step("Step 2: Running QA evaluation")
+        eval_qa_cmd = [
+            sys.executable, '-m', 'evaluation.cli', 'eval-qa',
+            '--input-path', str(qa_output),
+            '--output', str(metrics_output),
+            '--base-url', gpt_base_url,
+            '--api-key', gpt_api_key,
+            '--model', gpt_model,
+            '--batch-size', str(gpt_batch_size),
+            '--question-col', question_col,
+            '--answer-col', answer_col,
+        ]
+        if verbose:
+            eval_qa_cmd.append('--verbose')
+
+        result = subprocess.run(eval_qa_cmd)
+        if result.returncode != 0:
+            log_step("QA evaluation failed!", "error")
+            sys.exit(1)
+        log_step("QA evaluation completed!", "success")
+
+        log_step("QA experiment completed!", "success")
+        log_substep(f"QA answers: {qa_output}")
+        log_substep(f"Metrics: {metrics_output}")
+
+    except Exception as e:
+        log_step(f"Fatal error: {str(e)}", "error")
+        if verbose:
+            click.echo(click.style("Stack trace:", fg="red"))
+            click.echo(traceback.format_exc())
+        sys.exit(1)
+
+
+# =============================================================================
+# QA Evaluation Command (LLM-based QA scoring)
+# =============================================================================
+
+@cli.command()
+@click.option('--input-path', required=True, help='Path to JSONL file with QA answers')
+@click.option('--output', '-o', required=True, help='Output path for metrics JSON')
+@click.option('--base-url', default='http://localhost:8000/v1', help='vLLM API base URL')
+@click.option('--api-key', default='dummy', help='API key (can be dummy for local)')
+@click.option('--model', default='Qwen/Qwen3.5-27B', help='Model name for QA judge')
+@click.option('--batch-size', type=int, default=10, help='Batch size for QA evaluation')
+@click.option('--question-col', default='question', help='Column name for questions')
+@click.option('--answer-col', default='possible_answers', help='Column name for ground truth answers')
+@click.option('--predicted-col', default='answer', help='Column name for predicted answers')
+@click.option('--verbose', '-v', is_flag=True, help='Enable verbose output')
+def eval_qa(input_path, output, base_url, api_key, model, batch_size,
+            question_col, answer_col, predicted_col, verbose):
+    """Evaluate QA answers using LLM-based scoring and in_accuracy metric."""
+    from openai import OpenAI
+    import instructor
+    from pydantic import BaseModel, Field, confloat
+    from enum import Enum
+
+    class QALabel(str, Enum):
+        correct = "correct"
+        partially_correct = "partially_correct"
+        wrong = "wrong"
+
+    class QAVerdict(BaseModel):
+        label: QALabel = Field(description="One of: correct, partially_correct, wrong")
+        score: confloat(ge=0.0, le=1.0) = Field(description="1.0 for correct, 0.5 for partially correct, 0.0 for wrong")
+        rationale: str = Field(description="Brief explanation")
+
+    class VerdictWithId(QAVerdict):
+        id: int = Field(description="Must match the input case id")
+
+    class BatchQAVerdicts(BaseModel):
+        verdicts: List[VerdictWithId]
+
+    QA_SYSTEM_PROMPT = """You are an evaluation tool. Answer with one of:
+1: Correct,
+0.5: Partially correct,
+0: Wrong.
+
+You will be given a JSON array called "cases".
+Each case has:
+- id (int)
+- question (str)
+- golden_answer (str) - the ground truth answer
+- ai_answer (str) - the AI-generated answer to evaluate
+
+Task:
+- For each case, judge whether the AI-generated answer is correct according to the question and golden answer.
+
+Rubric:
+- correct (1): The AI answer is factually correct and matches the golden answer.
+- partially_correct (0.5): The AI answer is partially correct or contains some correct information but is incomplete.
+- wrong (0): The AI answer is factually incorrect or does not answer the question properly.
+
+Guidelines:
+- Treat the golden_answer as the ground truth.
+- Consider semantic equivalence, not just exact string matching.
+- Return one verdict per input case.
+
+Return only the structured output with:
+{ "verdicts": [ ... ] }"""
+
+    # Text normalization for in_accuracy
+    def normalize_text(text: str) -> str:
+        text = text.lower()
+        text = re.sub(r'[^\w\s]', '', text)
+        text = re.sub(r'\s+', ' ', text).strip()
+        return text
+
+    def compute_in_accuracy(predicted_answer: str, reference_answers: List[str]) -> bool:
+        predicted_normalized = normalize_text(predicted_answer)
+        for ref in reference_answers:
+            ref_normalized = normalize_text(ref)
+            if ref_normalized in predicted_normalized:
+                return True
+        return False
+
+    log_step("Starting QA evaluation", "start")
+
+    try:
+        # Load data
+        log_step("Loading input data")
+        data = load_jsonl(input_path)
+        log_substep(f"Loaded {len(data)} items from {input_path}")
+
+        # Extract questions, reference answers, and predicted answers
+        questions = []
+        reference_answers_list = []
+        predicted_answers = []
+
+        for item in data:
+            question = item.get(question_col, '')
+            predicted = item.get(predicted_col, '')
+
+            # Handle answer_col - could be a list or string
+            ref_answers = item.get(answer_col, '')
+            if isinstance(ref_answers, str):
+                ref_answers = [ref_answers]
+            elif ref_answers is None:
+                ref_answers = []
+
+            if question.strip() and predicted.strip():
+                questions.append(question)
+                reference_answers_list.append(ref_answers)
+                predicted_answers.append(predicted)
+
+        log_substep(f"{len(questions)} valid QA pairs")
+
+        if not questions:
+            log_step("No valid QA pairs found!", "error")
+            sys.exit(1)
+
+        # Initialize QA Judge
+        log_step(f"Initializing QA Judge (model: {model})")
+        raw_client = OpenAI(base_url=base_url, api_key=api_key)
+        client = instructor.patch(raw_client, mode=instructor.Mode.JSON)
+
+        # Run QA evaluation
+        log_step(f"Running QA evaluation (batch_size={batch_size})")
+        all_scores = []
+        all_labels = []
+        all_in_accuracy = []
+
+        for i in tqdm(range(0, len(questions), batch_size), desc="QA evaluation batches"):
+            batch_end = min(i + batch_size, len(questions))
+            batch_questions = questions[i:batch_end]
+            batch_ref_answers = reference_answers_list[i:batch_end]
+            batch_pred_answers = predicted_answers[i:batch_end]
+
+            # Compute in_accuracy for batch
+            for ref_answers, pred_answer in zip(batch_ref_answers, batch_pred_answers):
+                in_acc = compute_in_accuracy(pred_answer, ref_answers)
+                all_in_accuracy.append(in_acc)
+
+            # Create cases for LLM evaluation
+            cases = []
+            for j, (question, ref_answers, pred_answer) in enumerate(zip(batch_questions, batch_ref_answers, batch_pred_answers)):
+                golden_answer = " OR ".join(ref_answers) if ref_answers else ""
+                cases.append({
+                    "id": j,
+                    "question": question,
+                    "golden_answer": golden_answer,
+                    "ai_answer": pred_answer
+                })
+
+            try:
+                response: BatchQAVerdicts = client.chat.completions.create(
+                    model=model,
+                    temperature=0.0,
+                    response_model=BatchQAVerdicts,
+                    messages=[
+                        {"role": "system", "content": QA_SYSTEM_PROMPT},
+                        {"role": "user", "content": json.dumps({"cases": cases}, ensure_ascii=False)},
+                    ],
+                )
+
+                for verdict in response.verdicts:
+                    score = float(verdict.score)
+                    if score >= 0:
+                        all_scores.append(score)
+                        all_labels.append(verdict.label.value)
+
+            except Exception as e:
+                log_step(f"Batch {i // batch_size} failed: {e}", "warning")
+                # Add error scores
+                for _ in range(len(batch_pred_answers)):
+                    all_scores.append(-1.0)
+
+        # Calculate QA metrics
+        valid_scores = [s for s in all_scores if s >= 0]
+        in_accuracy_count = sum(all_in_accuracy)
+
+        if valid_scores:
+            log_step("QA Evaluation Results")
+            log_substep(f"avg_qa_score: {np.mean(valid_scores):.4f}")
+            log_substep(f"std_qa_score: {np.std(valid_scores):.4f}")
+            log_substep(f"min_qa_score: {np.min(valid_scores):.4f}")
+            log_substep(f"max_qa_score: {np.max(valid_scores):.4f}")
+            log_substep(f"in_accuracy: {in_accuracy_count / len(all_in_accuracy):.4f}")
+
+            label_counts = {}
+            for label in all_labels:
+                label_counts[label] = label_counts.get(label, 0) + 1
+            log_substep("Score distribution:")
+            for score, count in sorted(label_counts.items()):
+                log_substep(f"  {score}: {count} ({100*count/len(all_labels):.1f}%)")
+
+            qa_metrics = {
+                'avg_qa_score': float(np.mean(valid_scores)),
+                'std_qa_score': float(np.std(valid_scores)),
+                'min_qa_score': float(np.min(valid_scores)),
+                'max_qa_score': float(np.max(valid_scores)),
+                'score_distribution': label_counts,
+                'in_accuracy': float(in_accuracy_count / len(all_in_accuracy)),
+                'total_samples': len(valid_scores)
+            }
+        else:
+            log_step("ERROR: No valid QA scores obtained", "error")
+            qa_metrics = {'error': 'No valid scores'}
+
+        # Save results
+        log_step("Saving metrics")
+        with open(output, 'w') as f:
+            json.dump(qa_metrics, f, indent=2)
+        log_substep(f"Saved to {output}")
+
+        log_step("QA evaluation completed!", "success")
+
+    except Exception as e:
+        log_step(f"Fatal error: {str(e)}", "error")
+        if verbose:
+            click.echo(click.style("Stack trace:", fg="red"))
+            click.echo(traceback.format_exc())
+        sys.exit(1)
+
+
+# =============================================================================
+# Update run-all command to support QA task type
 # =============================================================================
 
 @cli.command()
@@ -761,19 +1082,30 @@ def run_experiment(config, input_path, output_dir, text_col, batch_size, gpt_bas
 @click.option('--input-path', required=True, help='Input dataset path')
 @click.option('--output-dir', required=True, help='Output directory for results')
 @click.option('--text-col', default='s_wiki_content', help='Column name for input text')
+@click.option('--question-col', default='question', help='Column name for questions')
+@click.option('--answer-col', default='possible_answers', help='Column name for ground truth answers')
 @click.option('--batch-size', type=int, default=5, help='Batch size for model inference')
-@click.option('--gpt-base-url', default='http://localhost:8000/v1', help='vLLM API base URL for GPT Judge')
-@click.option('--gpt-model', default='Qwen/Qwen3.5-27B', help='Model name for GPT Judge')
-@click.option('--gpt-batch-size', type=int, default=10, help='Batch size for GPT Judge')
+@click.option('--gpt-base-url', default='http://localhost:8000/v1', help='vLLM API base URL')
+@click.option('--gpt-api-key', default='dummy', help='API key (can be dummy for local)')
+@click.option('--gpt-model', default='Qwen/Qwen3.5-27B', help='Model name for evaluation')
+@click.option('--gpt-batch-size', type=int, default=10, help='Batch size for evaluation')
+@click.option('--task-type', default='paraphrase',
+              type=click.Choice(['paraphrase', 'qa']),
+              help='Type of experiment to run')
 @click.option('--verbose', '-v', is_flag=True, help='Enable verbose output')
 @click.option('--config-filter', default=None, help='Optional regex filter for config files')
-def run_all(configs_dir, input_path, output_dir, text_col, batch_size, gpt_base_url, gpt_model, gpt_batch_size, verbose, config_filter):
-    """Run all experiments for all configs in the configs directory."""
+def run_all(configs_dir, input_path, output_dir, text_col, question_col, answer_col,
+            batch_size, gpt_base_url, gpt_api_key, gpt_model, gpt_batch_size,
+            task_type, verbose, config_filter):
+    """Run all experiments for all configs in the configs directory.
+
+    Supports both paraphrase (factual consistency) and QA (answer correctness) tasks.
+    """
     import subprocess
     import re
     from datetime import datetime
 
-    log_step("Starting ALL experiments", "start")
+    log_step(f"Starting ALL {task_type.upper()} experiments", "start")
 
     try:
         # Find all config files
@@ -814,72 +1146,129 @@ def run_all(configs_dir, input_path, output_dir, text_col, batch_size, gpt_base_
                 model_output_dir = output_path / model_name
                 model_output_dir.mkdir(parents=True, exist_ok=True)
 
-                paraphrase_output = model_output_dir / f"{model_name}_paraphrase_{timestamp}.jsonl"
-                metrics_output = model_output_dir / f"{model_name}_metrics_{timestamp}.json"
+                if task_type == 'paraphrase':
+                    # Paraphrase experiment
+                    output_file = model_output_dir / f"{model_name}_paraphrase_{timestamp}.jsonl"
+                    metrics_file = model_output_dir / f"{model_name}_metrics_{timestamp}.json"
 
-                # Run paraphrase
-                paraphrase_cmd = [
-                    sys.executable, '-m', 'evaluation.cli', 'paraphrase',
-                    '--config', str(config_file),
-                    '--input-path', str(input_path),
-                    '--output-path', str(paraphrase_output),
-                    '--text-col', text_col,
-                    '--batch-size', str(batch_size),
-                ]
-                if verbose:
-                    paraphrase_cmd.append('--verbose')
+                    # Run paraphrase
+                    cmd = [
+                        sys.executable, '-m', 'evaluation.cli', 'paraphrase',
+                        '--config', str(config_file),
+                        '--input-path', str(input_path),
+                        '--output-path', str(output_file),
+                        '--text-col', text_col,
+                        '--batch-size', str(batch_size),
+                    ]
+                    if verbose:
+                        cmd.append('--verbose')
 
-                result = subprocess.run(paraphrase_cmd)
-                paraphrase_success = result.returncode == 0
+                    result = subprocess.run(cmd)
+                    if result.returncode != 0:
+                        log_step(f"Paraphrase failed for {model_name}", "error")
+                        results[model_name] = {"paraphrase": False, "evaluation": False, "error": "paraphrase_failed"}
+                        continue
 
-                if not paraphrase_success:
-                    log_step(f"Paraphrase failed for {model_name}", "error")
-                    results[model_name] = {"paraphrase": False, "gpt_judge": False, "error": "paraphrase_failed"}
-                    continue
+                    # Run GPT Judge
+                    eval_cmd = [
+                        sys.executable, '-m', 'evaluation.cli', 'eval-gpt',
+                        '--input-path', str(output_file),
+                        '--output', str(metrics_file),
+                        '--base-url', gpt_base_url,
+                        '--api-key', gpt_api_key,
+                        '--model', gpt_model,
+                        '--batch-size', str(gpt_batch_size),
+                        '--original-col', text_col,
+                        '--rephrased-col', 'rephrased_text',
+                    ]
+                    if verbose:
+                        eval_cmd.append('--verbose')
 
-                # Run GPT Judge
-                eval_cmd = [
-                    sys.executable, '-m', 'evaluation.cli', 'eval-gpt',
-                    '--input-path', str(paraphrase_output),
-                    '--output', str(metrics_output),
-                    '--base-url', gpt_base_url,
-                    '--model', gpt_model,
-                    '--batch-size', str(gpt_batch_size),
-                    '--original-col', text_col,
-                    '--rephrased-col', 'rephrased_text',
-                ]
-                if verbose:
-                    eval_cmd.append('--verbose')
+                    result = subprocess.run(eval_cmd)
+                    if result.returncode != 0:
+                        log_step(f"GPT Judge failed for {model_name}", "error")
+                        results[model_name] = {"paraphrase": True, "evaluation": False, "error": "evaluation_failed"}
+                        continue
 
-                result = subprocess.run(eval_cmd)
-                gpt_success = result.returncode == 0
+                    results[model_name] = {"paraphrase": True, "evaluation": True, "metrics_file": str(metrics_file)}
 
-                if not gpt_success:
-                    log_step(f"GPT Judge failed for {model_name}", "error")
-                    results[model_name] = {"paraphrase": True, "gpt_judge": False, "error": "gpt_judge_failed"}
-                    continue
+                else:  # task_type == 'qa'
+                    # QA experiment
+                    output_file = model_output_dir / f"{model_name}_qa_answers_{timestamp}.jsonl"
+                    metrics_file = model_output_dir / f"{model_name}_qa_metrics_{timestamp}.json"
 
-                results[model_name] = {"paraphrase": True, "gpt_judge": True, "metrics_file": str(metrics_output)}
+                    # Run QA generation
+                    cmd = [
+                        sys.executable, '-m', 'evaluation.cli', 'qa',
+                        '--config', str(config_file),
+                        '--input-path', str(input_path),
+                        '--output-path', str(output_file),
+                        '--text-col', text_col,
+                        '--batch-size', str(batch_size),
+                    ]
+                    if verbose:
+                        cmd.append('--verbose')
+
+                    result = subprocess.run(cmd)
+                    if result.returncode != 0:
+                        log_step(f"QA generation failed for {model_name}", "error")
+                        results[model_name] = {"qa": False, "evaluation": False, "error": "qa_failed"}
+                        continue
+
+                    # Run QA evaluation
+                    eval_cmd = [
+                        sys.executable, '-m', 'evaluation.cli', 'eval-qa',
+                        '--input-path', str(output_file),
+                        '--output', str(metrics_file),
+                        '--base-url', gpt_base_url,
+                        '--api-key', gpt_api_key,
+                        '--model', gpt_model,
+                        '--batch-size', str(gpt_batch_size),
+                        '--question-col', question_col,
+                        '--answer-col', answer_col,
+                    ]
+                    if verbose:
+                        eval_cmd.append('--verbose')
+
+                    result = subprocess.run(eval_cmd)
+                    if result.returncode != 0:
+                        log_step(f"QA evaluation failed for {model_name}", "error")
+                        results[model_name] = {"qa": True, "evaluation": False, "error": "evaluation_failed"}
+                        continue
+
+                    results[model_name] = {"qa": True, "evaluation": True, "metrics_file": str(metrics_file)}
+
                 log_step(f"Completed {model_name} successfully!", "success")
 
             except Exception as e:
                 log_step(f"Error processing {config_file.name}: {e}", "error")
-                results[model_name] = {"paraphrase": False, "gpt_judge": False, "error": str(e)}
+                # Use config filename as fallback if model_name is not defined
+                fallback_name = config_file.stem if 'model_name' not in locals() else model_name
+                results[fallback_name] = {"paraphrase": False, "qa": False, "evaluation": False, "error": str(e)}
 
         # Summary
         log_step("=" * 50, "info")
-        log_step("SUMMARY", "start")
+        log_step(f"SUMMARY ({task_type.upper()})", "start")
         log_step("=" * 50, "info")
 
         for model_name, status in results.items():
-            paraphrase_status = "✅" if status["paraphrase"] else "❌"
-            gpt_status = "✅" if status["gpt_judge"] else "❌"
-            log_step(f"{model_name}: Paraphrase {paraphrase_status}, GPT Judge {gpt_status}")
+            if task_type == 'paraphrase':
+                gen_status = "✅" if status.get("paraphrase") else "❌"
+                eval_status = "✅" if status.get("evaluation") else "❌"
+                log_step(f"{model_name}: Paraphrase {gen_status}, Evaluation {eval_status}")
+            else:
+                gen_status = "✅" if status.get("qa") else "❌"
+                eval_status = "✅" if status.get("evaluation") else "❌"
+                log_step(f"{model_name}: QA {gen_status}, Evaluation {eval_status}")
 
-        all_success = all(v["paraphrase"] and v["gpt_judge"] for v in results.values())
+        all_success = all(
+            status.get("paraphrase") and status.get("evaluation") if task_type == 'paraphrase'
+            else status.get("qa") and status.get("evaluation")
+            for v in results.values() for status in [v]
+        )
 
         # Save summary
-        summary_file = output_path / f"summary_{timestamp}.json"
+        summary_file = output_path / f"summary_{task_type}_{timestamp}.json"
         with open(summary_file, 'w') as f:
             json.dump(results, f, indent=2)
         log_substep(f"Summary saved to: {summary_file}")
@@ -895,6 +1284,7 @@ def run_all(configs_dir, input_path, output_dir, text_col, batch_size, gpt_base_
             click.echo(click.style("Stack trace:", fg="red"))
             click.echo(traceback.format_exc())
         sys.exit(1)
+
 
 if __name__ == '__main__':
     cli()

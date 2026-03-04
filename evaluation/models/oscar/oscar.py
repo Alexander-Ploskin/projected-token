@@ -23,12 +23,15 @@ Answer:
         torch_dtype = kwargs.get("torch_dtype", torch.bfloat16)
         trust_remote_code = kwargs.get("trust_remote_code", True)
 
-        # Use device_map for proper loading with meta tensors
+        # Force all components (including compressor) to use specified device
+        # Use device_map="cuda:0" explicitly to avoid auto-assignment to other GPUs
+        device_map = device if device != "cpu" else "cpu"
+
         self._model = AutoModel.from_pretrained(
             model_name_or_path,
             torch_dtype=torch_dtype,
             trust_remote_code=trust_remote_code,
-            device_map=device,
+            device_map=device_map,
         ).eval()
 
     # OSCAR's generate_from_compressed_documents_and_questions does not accept HF-style
