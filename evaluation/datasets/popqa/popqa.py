@@ -6,8 +6,8 @@ from evaluation.datasets import Dataset
 
 
 class PopqaDataset(Dataset):
-    def __init__(self, data: list[dict[str, Any]]) -> None:
-        self._data = data
+    def __init__(self, data: list[dict[str, Any]] = None) -> None:
+        self._data = data or []
 
     @classmethod
     def load(cls, path: str) -> "PopqaDataset":
@@ -15,12 +15,15 @@ class PopqaDataset(Dataset):
             with open(path, "r", encoding="utf-8") as fp:
                 data = [json.loads(line.strip()) for line in fp]
         elif path.endswith(".parquet"):
+            # Read directly via pyarrow to avoid pandas issues with nested columns
             table = pq.read_table(path)
-            df = table.to_pandas()
-            data = df.to_dict('records')
+            # Convert to list of dicts using pyarrow's to_pydict
+            pydict = table.to_pydict()
+            num_rows = table.num_rows
+            data = [{col: row[i] for col, row in pydict.items()} for i in range(num_rows)]
         else:
             raise ValueError(f"Unsupported format: {path}")
-        
+
         return cls(data)
 
     def __iter__(self) -> Iterator[dict[str, Any]]:
