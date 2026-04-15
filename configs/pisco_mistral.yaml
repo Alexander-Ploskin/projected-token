@@ -1,0 +1,15 @@
+dataset:
+  class: evaluation.datasets.PopqaDataset
+
+model:
+  class: evaluation.models.PiscoModel
+  kwargs:
+    model_name_or_path: "naver/pisco-mistral"
+    device: "cuda:0"
+    trust_remote_code: true
+
+generation:
+  max_new_tokens: 512
+
+experiment:
+  sample_count: 1
