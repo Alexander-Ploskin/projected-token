@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+
 """Evaluate paraphrases using GPT Judge metric and simple similarity metrics."""
 
 import argparse

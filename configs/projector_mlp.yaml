@@ -1,0 +1,25 @@
+# Variant A: MLP проектор (только проектор обучается, OSCAR заморожен)
+
+oscar_model_name: "/data/huggingface/naver/oscar-qwen2-7B"
+
+embed_dim: 768
+
+pooler: "mean"
+num_layers: 2
+dropout: 0.1
+
+batch_size: 64
+lr: 1e-5
+temperature: 0.05
+
+epochs: 3
+val_split: 0.02
+val_every_n_steps: 1000
+
+device: "cuda:0"
+
+output_dir: "./checkpoints/projector_mlp"
+log_dir: "./logs/projector_mlp"
+
+max_train_samples: null
+max_val_samples: null

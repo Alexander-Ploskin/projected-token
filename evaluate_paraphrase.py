@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+
 """Evaluate paraphrase quality using BLEU, ROUGE, and other metrics."""
 
 import json

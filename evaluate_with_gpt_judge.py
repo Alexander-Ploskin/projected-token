@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+
 """Evaluate paraphrase with GPT Judge metric using local vllm."""
 
 import json

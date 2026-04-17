@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+
 """Run PISCO paraphrase experiment on PopQA dataset."""
 
 import json

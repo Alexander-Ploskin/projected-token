@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+
 """Simple paraphrase evaluation without NLTK."""
 
 import json

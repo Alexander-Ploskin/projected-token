@@ -194,3 +194,16 @@ latent_list = encoder.encode_batch(documents, questions)  # [tensor, tensor]
 - tqdm
 - openai + instructor (для GPT judge)
 - numpy
+
+
+poetry run python oscar_qa_experiment.py \                                                              
+       --max-rows 300 \                                                                                                                      
+       --aggregation mean \                                                                                                                  
+       --batch-size 4 \                                                                                                                      
+       --max-new-tokens 32
+
+poetry run python oscar_qa_experiment.py \
+    --max-rows 300 \
+    --aggregation mean \
+    --batch-size 4 \
+    --max-new-tokens 32
