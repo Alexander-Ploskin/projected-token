@@ -1,0 +1,24 @@
+recipe: lora
+# Variant B: LoRA проектор (MLP + LoRA адаптер, OSCAR заморожен)
+
+oscar_model_name: "/data/huggingface/naver/oscar-qwen2-7B"
+
+embed_dim: 768
+pooler: "mean"
+
+lora_r: 8
+lora_alpha: 16
+lora_dropout: 0.1
+
+batch_size: 64
+lr: 1e-4
+temperature: 0.02
+
+epochs: 3
+device: "cuda:0"
+
+output_dir: "./checkpoints/projector_lora"
+log_dir: "./logs/projector_lora"
+
+max_train_samples: null
+max_val_samples: null

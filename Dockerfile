@@ -34,9 +34,10 @@ RUN curl -sSL https://bootstrap.pypa.io/get-pip.py | python3.11 && \
 WORKDIR /workspace
 COPY pyproject.toml poetry.lock* ./
 RUN poetry lock
-RUN poetry install --no-root --only main
+RUN poetry install --only main
 COPY . .
 RUN mkdir -p /workspace/data
 ENV PYTHONPATH=.
 
-ENTRYPOINT ["tail", "-f", "/dev/null"]
+ENTRYPOINT ["python", "-m", "projected_token"]
+CMD ["--help"]

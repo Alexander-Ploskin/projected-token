@@ -1,0 +1,29 @@
+# Schema sketch for generation/evaluation experiment configs.
+dataset:
+  class: projected_token.datasets.PopqaDataset
+  args: []
+  kwargs: {}
+model:
+  class: projected_token.models.OscarModel
+  args: []
+  kwargs:
+    model_name_or_path: naver/oscar-qwen2-7B
+    device: cuda:0
+generation:
+  max_new_tokens: 64
+  temperature: 0.0
+experiment:
+  sample_count: 1
+  prompt_template: null
+evaluation:
+  llm_base_url: http://localhost:8000/v1
+  llm_api_key: dummy
+  llm_model: Qwen/Qwen3.5-27B
+  batch_size: 10
+metrics:
+  - class: projected_token.metrics.GPTScoreMetric
+    kwargs:
+      config:
+        base_url: http://localhost:8000/v1
+        api_key: dummy
+        model: judge-model

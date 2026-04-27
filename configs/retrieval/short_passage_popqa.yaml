@@ -1,0 +1,19 @@
+dataset:
+  path: data/eval/popqa/short_popqa.parquet
+  text_col: s_wiki_content
+encoder:
+  name: oscar_projector
+  kwargs:
+    oscar_model_name: naver/oscar-qwen2-7B
+    projector_path: artifacts/checkpoints/projector_mlp/best_model.pt
+    device: cuda:0
+index:
+  output_dir: artifacts/indexes/short_popqa
+  metric: ip
+  normalize: true
+  batch_size: 32
+task:
+  name: popqa
+metrics:
+  top_k: [1, 5, 10, 20]
+  output_path: artifacts/results/retrieval/short_popqa_metrics.json

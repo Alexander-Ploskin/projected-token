@@ -1,0 +1,12 @@
+recipe: flat
+dataset: data/finetune/mixed_train_hard_negatives.json
+oscar_model: naver/oscar-qwen2-7B
+pooler: flatten
+num_layers: 3
+batch_size: 32
+lr: 1.0e-4
+temperature: 0.02
+epochs: 5
+device: cuda:0
+output_dir: artifacts/checkpoints/projector_flat_3l
+log_dir: artifacts/results/logs/projector_flat_3l

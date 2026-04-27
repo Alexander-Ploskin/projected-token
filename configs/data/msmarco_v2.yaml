@@ -1,0 +1,4 @@
+command: prepare-msmarco-v2
+out_dir: data/msmarco
+num_negatives: 5
+negative_type: bm25

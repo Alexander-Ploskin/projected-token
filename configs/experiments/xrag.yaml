@@ -1,0 +1,21 @@
+dataset:
+  class: projected_token.datasets.PopqaDataset
+  args:
+    - "s_wiki_content"
+
+model:
+  class: projected_token.models.XRAGModel
+  kwargs:
+    llm_device: "cuda:0"
+    retriever_device: "cuda:1"
+    llm_name_or_path: "data/cache"
+    retriever_name_or_path: "Salesforce/SFR-Embedding-Mistral"
+    xrag_token: "[XRAG]"
+
+generation:
+  do_sample: true
+  temperature: 0.3
+  max_new_tokens: 400
+
+experiment:
+  sample_count: 3

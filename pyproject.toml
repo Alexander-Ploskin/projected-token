@@ -4,6 +4,7 @@ version = "0.1.0"
 description = ""
 authors = ["Alexander-Ploskin <ploskin0107@gmail.com>"]
 readme = "README.md"
+packages = [{ include = "projected_token" }]
 
 [tool.poetry.dependencies]
 python = ">=3.11,<3.15"
@@ -11,7 +12,7 @@ numpy = ">=2.0.0,<3.0.0"
 pandas = ">=2.2.3,<3.0.0"
 pyarrow = ">=18.0.0,<24.0.0"
 torch = ">=2.5.0,<3.0.0"
-transformers = ">=5.0.0,<6.0.0"
+transformers = "^5.5.4"
 click = "8.3.1"
 scikit-learn = "^1.8.0"
 datasets = "^4.5.0"
@@ -20,12 +21,27 @@ requests = "^2.32.5"
 pydantic = "^2.12.5"
 openai = "^2.21.0"
 instructor = "^1.14.5"
-spacy = "^3.8.11"
+spacy = { version = "^3.8.11", optional = true }
 scipy = "^1.17.1"
 tensorboard = "^2.20.0"
 protobuf = "^6.33.5"
 jsonlines = "^4.0.0"
 nltk = "^3.9.2"
+setuptools = "79.0.1"
+peft = "^0.19.0"
+sentencepiece = "^0.2.1"
+tiktoken = "^0.12.0"
+faiss-cpu = "^1.13.2"
+sentence-transformers = "^5.4.1"
+matplotlib = "^3.10.8"
+h5py = "^3.16.0"
+pyyaml = "^6.0.2"
+
+[tool.poetry.scripts]
+projected-token = "projected_token.cli.main:cli"
+
+[tool.poetry.extras]
+alignscore = ["spacy"]
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]
