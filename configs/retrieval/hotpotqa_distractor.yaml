@@ -1,0 +1,18 @@
+dataset:
+  path: data/eval/hotpotqa/distractor
+  text_col: context
+encoder:
+  name: salesforce
+  kwargs:
+    model_name_or_path: Salesforce/SFR-Embedding-Mistral
+    device: cuda:0
+index:
+  output_dir: artifacts/indexes/hotpotqa_sfr
+  metric: ip
+  normalize: true
+  batch_size: 32
+task:
+  name: hotpotqa_distractor
+metrics:
+  top_k: [1, 5, 10]
+  output_path: artifacts/results/retrieval/hotpotqa_metrics.json

@@ -1,0 +1,22 @@
+# Schema sketch for retrieval configs.
+dataset:
+  path: data/eval/popqa/test.parquet
+  text_col: s_wiki_content
+  id_col: id
+encoder:
+  name: oscar_projector
+  kwargs:
+    oscar_model_name: naver/oscar-qwen2-7B
+    projector_path: artifacts/checkpoints/projector_mlp/best_model.pt
+    device: cuda:0
+index:
+  output_dir: artifacts/indexes/popqa_oscar_projector
+  metric: ip
+  normalize: true
+  batch_size: 32
+task:
+  name: popqa
+  question_col: question
+metrics:
+  top_k: [1, 3, 5, 10, 20]
+  output_path: artifacts/results/retrieval_metrics.json

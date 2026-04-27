@@ -1,0 +1,27 @@
+# QA experiment configuration for OSCAR model on PopQA dataset
+# Following OSCAR paper (arxiv:2504.07109) QA evaluation setup
+
+dataset:
+  class: projected_token.datasets.PopqaDataset
+
+model:
+  class: projected_token.models.OscarModel
+  kwargs:
+    model_name_or_path: "naver/oscar-qwen2-7B"
+    device: "cuda:0"
+    trust_remote_code: true
+
+generation:
+  # Shorter generation for QA answers (vs 512 for paraphrase)
+  max_new_tokens: 64
+
+experiment:
+  sample_count: 1
+  # OSCAR model uses QA_DEFAULT_PROMPT_TEMPLATE by default
+
+# QA evaluation settings (used by eval-qa command)
+evaluation:
+  llm_base_url: "http://localhost:8000/v1"
+  llm_api_key: "dummy"
+  llm_model: "Qwen/Qwen3.5-27B"
+  batch_size: 10

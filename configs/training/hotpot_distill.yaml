@@ -1,0 +1,8 @@
+recipe: hotpot_distill
+embeddings_path: artifacts/teacher_embeddings/hotpotqa_teacher_embeddings.h5
+batch_size: 128
+lr: 1.0e-3
+epochs: 10
+device: cuda:0
+output_dir: artifacts/checkpoints/hotpot_projector_distill
+log_dir: artifacts/results/logs/hotpot_projector_distill

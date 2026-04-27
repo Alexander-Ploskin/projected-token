@@ -1,0 +1,16 @@
+dataset:
+  class: projected_token.datasets.PopqaDataset
+
+model:
+  class: projected_token.models.RAGModel
+  kwargs:
+    llm_name_or_path: "Qwen/Qwen2.5-1.5B-Instruct"
+    device: "cuda:0"
+
+generation:
+  do_sample: true
+  temperature: 0.3
+  max_new_tokens: 512
+
+experiment:
+  sample_count: 1

@@ -1,0 +1,8 @@
+recipe: distill
+teacher_embeddings: artifacts/teacher_embeddings/teacher_embeddings_passage_100k.h5
+batch_size: 512
+lr: 1.0e-4
+epochs: 30
+device: cuda:0
+output_dir: artifacts/checkpoints/projector_distill
+log_dir: artifacts/results/logs/projector_distill

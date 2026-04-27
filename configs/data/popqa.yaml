@@ -1,0 +1,4 @@
+command: prepare-popqa
+output_dir: data/eval/popqa
+workers: 8
+batch_size: 50

@@ -208,4 +208,17 @@ __marimo__/
 
 cache/
 
-poetry.lock
+# Experiment outputs and local data artifacts
+results/
+logs/
+checkpoints/
+data/**/*.json
+data/**/*.jsonl
+data/**/*.parquet
+data/**/*.h5
+data/**/*.faiss
+artifacts/**
+!artifacts/
+!artifacts/manifest.json
+*_results.json
+*metrics.json

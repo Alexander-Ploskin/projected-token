@@ -1,0 +1,26 @@
+recipe: full
+# Variant C: Full fine-tune (OSCAR с LoRA + проектор)
+
+oscar_model_name: "/data/huggingface/naver/oscar-qwen2-7B"
+
+embed_dim: 768
+pooler: "mean"
+
+oscar_lora_r: 8
+oscar_lora_alpha: 16
+
+projector_num_layers: 2
+projector_dropout: 0.1
+
+batch_size: 64
+lr: 1e-4
+temperature: 0.02
+
+epochs: 3
+device: "cuda:0"
+
+output_dir: "./checkpoints/projector_full"
+log_dir: "./logs/projector_full"
+
+max_train_samples: null
+max_val_samples: null
