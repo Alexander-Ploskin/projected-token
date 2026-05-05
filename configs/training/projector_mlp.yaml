@@ -1,7 +1,7 @@
 recipe: mlp
 # Variant A: MLP проектор (только проектор обучается, OSCAR заморожен)
 
-oscar_model_name: "/data/huggingface/naver/oscar-qwen2-7B"
+oscar_model_name: "naver/oscar-qwen2-7B"
 
 embed_dim: 768
 

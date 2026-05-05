@@ -1,7 +1,7 @@
 recipe: full
 # Variant C: Full fine-tune (OSCAR с LoRA + проектор)
 
-oscar_model_name: "/data/huggingface/naver/oscar-qwen2-7B"
+oscar_model_name: "naver/oscar-qwen2-7B"
 
 embed_dim: 768
 pooler: "mean"

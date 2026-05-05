@@ -1,0 +1,4 @@
+configs:
+  - configs/training/stage_c_two_stage_from_e5_base.yaml
+  - configs/training/stage_c_two_stage_from_bge_base.yaml
+summary_output: artifacts/results/matrix/stage_c_two_stage_summary.json

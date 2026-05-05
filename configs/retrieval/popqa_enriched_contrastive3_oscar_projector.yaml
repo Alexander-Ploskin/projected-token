@@ -5,7 +5,7 @@ dataset:
 encoder:
   name: oscar_projector
   kwargs:
-    oscar_model_name: /data/huggingface/naver/oscar-qwen2-7B
+    oscar_model_name: naver/oscar-qwen2-7B
     projector_path: artifacts/runs/20260428_173204_mlp-projector-mlp-3layer-msmarco/checkpoints/best_model.pt
     device: cuda:0
     embed_dim: 768

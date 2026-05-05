@@ -1,8 +1,7 @@
 import torch
 from torch.utils.data import Dataset, DataLoader
-from typing import Optional
+from typing import Optional, Any
 from datasets import load_dataset
-from transformers import AutoTokenizer
 
 
 class MSMarcoDataset(Dataset):
@@ -17,6 +16,7 @@ class MSMarcoDataset(Dataset):
         config: str = "triplet",
         split: str = "train",
         max_samples: Optional[int] = None,
+        fallback_negative_strategy: str = "first_non_positive",
     ):
         """Инициализация датасета.
 
@@ -27,6 +27,7 @@ class MSMarcoDataset(Dataset):
             max_samples: ограничение количества samples (для отладки)
         """
         self.split = split
+        self.fallback_negative_strategy = fallback_negative_strategy
 
         print(f"Loading MS MARCO dataset: {data_path}, config={config}, split={split}...")
         self.dataset = load_dataset(
@@ -40,16 +41,72 @@ class MSMarcoDataset(Dataset):
 
         print(f"Loaded {len(self.dataset)} samples")
 
+    def _extract_from_passages(self, item: dict[str, Any]) -> dict[str, str]:
+        passages = item.get("passages")
+        if not isinstance(passages, dict):
+            raise ValueError("Expected dict field 'passages' for MS MARCO raw sample.")
+
+        texts = passages.get("passage_text", [])
+        selected = passages.get("is_selected", [])
+        if not isinstance(texts, list) or not texts:
+            raise ValueError("Raw MS MARCO sample has no non-empty passages.")
+
+        positive_idx = None
+        for idx, flag in enumerate(selected):
+            if idx < len(texts) and int(flag) > 0 and isinstance(texts[idx], str) and texts[idx].strip():
+                positive_idx = idx
+                break
+        if positive_idx is None:
+            for idx, text in enumerate(texts):
+                if isinstance(text, str) and text.strip():
+                    positive_idx = idx
+                    break
+        if positive_idx is None:
+            raise ValueError("Could not identify positive passage in raw MS MARCO sample.")
+
+        positive = texts[positive_idx].strip()
+        negative_candidates = [
+            text.strip()
+            for idx, text in enumerate(texts)
+            if idx != positive_idx and isinstance(text, str) and text.strip()
+        ]
+        if negative_candidates:
+            if self.fallback_negative_strategy == "random":
+                # PyTorch DataLoader worker RNG controls randomness here if enabled.
+                negative = negative_candidates[torch.randint(0, len(negative_candidates), (1,)).item()]
+            else:
+                negative = negative_candidates[0]
+        else:
+            negative = positive
+
+        query = item.get("query") or item.get("question") or ""
+        if not isinstance(query, str) or not query.strip():
+            raise ValueError("Could not identify query text in raw MS MARCO sample.")
+        return {
+            "query": query.strip(),
+            "positive": positive,
+            "negative": negative,
+        }
+
     def __len__(self):
         return len(self.dataset)
 
     def __getitem__(self, idx):
         item = self.dataset[idx]
-        return {
-            "query": item["query"],
-            "positive": item["positive"],
-            "negative": item["negative"],
-        }
+        # sentence-transformers triplets and preprocessed json datasets
+        if {"query", "positive", "negative"}.issubset(item.keys()):
+            return {
+                "query": item["query"],
+                "positive": item["positive"],
+                "negative": item["negative"],
+            }
+        # microsoft/ms_marco v1.x raw format with passages/is_selected
+        if "passages" in item:
+            return self._extract_from_passages(item)
+        raise ValueError(
+            "Unsupported dataset row format. "
+            "Expected keys [query, positive, negative] or raw MS MARCO passages."
+        )
 
 
 def collate_fn(batch):
@@ -80,6 +137,7 @@ def create_dataloaders(
     num_workers: int = 0,
     device: str = "cuda:0",
     val_split: float = 0.1,
+    fallback_negative_strategy: str = "first_non_positive",
 ):
     """Создать train и validation dataloaders.
 
@@ -100,6 +158,7 @@ def create_dataloaders(
         config=dataset_config,
         split=dataset_split,
         max_samples=max_train_samples,
+        fallback_negative_strategy=fallback_negative_strategy,
     )
     
     val_size = max(1, int(len(full_dataset) * val_split))

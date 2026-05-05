@@ -1,12 +1,12 @@
 recipe: mlp
-oscar_model_name: "/data/huggingface/naver/oscar-qwen2-7B"
+oscar_model_name: "naver/oscar-qwen2-7B"
 
 embed_dim: 768
 pooler: "flatten"
 num_layers: 1
 dropout: 0.0
 
-dataset_path: "/data/huggingface/sentence-transformers/msmarco-msmarco-distilbert-base-v3"
+dataset_path: "sentence-transformers/msmarco-msmarco-distilbert-base-v3"
 dataset_config: "triplet"
 dataset_split: "train"
 

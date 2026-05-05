@@ -1,5 +1,5 @@
 recipe: full
-oscar_model_name: "/data/huggingface/naver/oscar-qwen2-7B"
+oscar_model_name: "naver/oscar-qwen2-7B"
 
 embed_dim: 768
 pooler: "mean"
@@ -13,7 +13,7 @@ unfreeze_last_n_layers: 0
 projector_num_layers: 2
 projector_dropout: 0.1
 
-dataset_path: "/data/huggingface/sentence-transformers/msmarco-msmarco-distilbert-base-v3"
+dataset_path: "sentence-transformers/msmarco-msmarco-distilbert-base-v3"
 dataset_config: "triplet"
 dataset_split: "train"
 

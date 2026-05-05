@@ -32,6 +32,7 @@ from projected_token.io import write_json, write_csv
 from projected_token.artifacts import metrics_to_rows
 from projected_token.plotting import plot_training_curves
 from projected_token.artifacts import create_run_layout, write_config_lock
+from projected_token.oscar_runtime import disable_transformers_allocator_warmup, configure_oscar_component_devices
 
 
 class H5DistillationDataset(Dataset):
@@ -161,12 +162,14 @@ class DistillationTrainer:
     ):
         self.device = torch.device(device)
         
+        disable_transformers_allocator_warmup()
         print(f"Loading OSCAR model: {oscar_model_name}")
         self.oscar_model = AutoModel.from_pretrained(
             oscar_model_name,
             torch_dtype=torch.bfloat16,
             trust_remote_code=True,
         ).to(self.device).eval()
+        configure_oscar_component_devices(self.oscar_model)
         
         if hasattr(self.oscar_model, 'compr') and hasattr(self.oscar_model.compr, 'config'):
             self.oscar_model.compr.config.mean_resizing = False

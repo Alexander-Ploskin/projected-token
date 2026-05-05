@@ -13,6 +13,7 @@ TRAINING_RECIPES = {
     "mlp": "projected_token.training.trainer_mlp:create_mlp_trainer",
     "lora": "projected_token.training.trainer_lora:create_lora_trainer",
     "full": "projected_token.training.trainer_full:create_full_trainer",
+    "advanced": "projected_token.training.advanced_trainer:create_advanced_trainer",
 }
 
 ARGPARSE_RECIPES = {

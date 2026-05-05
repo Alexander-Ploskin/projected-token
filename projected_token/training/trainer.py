@@ -25,6 +25,7 @@ class BaseTrainer:
         val_loader: DataLoader,
         loss_fn: nn.Module,
         optimizer: torch.optim.Optimizer,
+        use_hard_negatives: bool = False,
         device: str = "cuda:0",
         output_dir: str = "./checkpoints",
         log_dir: str = "./logs",
@@ -47,6 +48,7 @@ class BaseTrainer:
         self.val_loader = val_loader
         self.loss_fn = loss_fn
         self.optimizer = optimizer
+        self.use_hard_negatives = use_hard_negatives
         self.device = torch.device(device)
         self.output_dir = output_dir
         self.log_dir = log_dir
@@ -69,6 +71,26 @@ class BaseTrainer:
         self.model_config = {}
         self.train_history: list[dict[str, Any]] = []
         self.val_history: list[dict[str, Any]] = []
+
+    def _compute_loss(
+        self,
+        query_embeds: torch.Tensor,
+        doc_embeds: torch.Tensor,
+        negative_embeds: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        if self.use_hard_negatives and negative_embeds is not None:
+            try:
+                return self.loss_fn(
+                    query_embeddings=query_embeds,
+                    positive_embeddings=doc_embeds,
+                    negative_embeddings=negative_embeds,
+                )
+            except TypeError:
+                return self.loss_fn(query_embeds, doc_embeds, negative_embeds)
+        try:
+            return self.loss_fn(query_embeddings=query_embeds, positive_embeddings=doc_embeds)
+        except TypeError:
+            return self.loss_fn(query_embeds, doc_embeds)
 
     def compute_metrics(self, query_embeds: torch.Tensor, doc_embeds: torch.Tensor) -> Dict[str, float]:
         """Вычислить метрики качества.
@@ -140,15 +162,16 @@ class BaseTrainer:
         for batch in pbar:
             queries = batch["queries"]
             positives = batch["positives"]
-            negatives = batch["negatives"]
+            negatives = batch.get("negatives")
 
             # Encode queries and docs using the same projector
             # (treat queries as short documents)
             query_embeds = self.encode_documents(queries)
             doc_embeds = self.encode_documents(positives)
+            neg_embeds = self.encode_documents(negatives) if self.use_hard_negatives and negatives else None
 
             self.optimizer.zero_grad()
-            loss = self.loss_fn(query_embeds, doc_embeds)
+            loss = self._compute_loss(query_embeds, doc_embeds, negative_embeds=neg_embeds)
             loss.backward()
             self.optimizer.step()
 
@@ -191,11 +214,13 @@ class BaseTrainer:
             for batch in tqdm(self.val_loader, desc="Validation"):
                 queries = batch["queries"]
                 positives = batch["positives"]
+                negatives = batch.get("negatives")
 
                 query_embeds = self.encode_documents(queries)
                 doc_embeds = self.encode_documents(positives)
+                neg_embeds = self.encode_documents(negatives) if self.use_hard_negatives and negatives else None
 
-                loss = self.loss_fn(query_embeds, doc_embeds)
+                loss = self._compute_loss(query_embeds, doc_embeds, negative_embeds=neg_embeds)
                 total_loss += loss.item()
 
                 metrics = self.compute_metrics(query_embeds, doc_embeds)
@@ -351,14 +376,16 @@ class BaseTrainer:
             for batch in pbar:
                 queries = batch["queries"]
                 positives = batch["positives"]
+                negatives = batch.get("negatives")
 
                 # Forward - queries as questions, positives as documents
                 query_embeds = self.encode_documents(queries)
                 doc_embeds = self.encode_documents(positives)
+                neg_embeds = self.encode_documents(negatives) if self.use_hard_negatives and negatives else None
 
                 # Loss & backward
                 self.optimizer.zero_grad()
-                loss = self.loss_fn(query_embeds, doc_embeds)
+                loss = self._compute_loss(query_embeds, doc_embeds, negative_embeds=neg_embeds)
                 loss.backward()
                 self.optimizer.step()
 

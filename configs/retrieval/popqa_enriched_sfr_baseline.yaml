@@ -5,7 +5,7 @@ dataset:
 encoder:
   name: salesforce
   kwargs:
-    model_name_or_path: /data/huggingface/Salesforce/SFR-Embedding-Mistral
+    model_name_or_path: Salesforce/SFR-Embedding-Mistral
     device: cuda:0
 index:
   output_dir: artifacts/indexes/popqa_enriched_sfr_baseline

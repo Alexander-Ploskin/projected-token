@@ -1,0 +1,21 @@
+popqa:
+  dataset_path: data/eval/popqa/popqa_enriched.parquet
+  text_col: s_wiki_content
+  id_col: id
+  question_col: question
+beir:
+  split: test
+  datasets:
+    - name: scifact
+      path: data/beir/scifact
+    - name: nfcorpus
+      path: data/beir/nfcorpus
+    - name: fiqa-2018
+      path: data/beir/fiqa
+retrieval:
+  top_k: [1, 3, 5, 10, 20]
+  search_k: 100
+  batch_size: 32
+  index_metric: ip
+  normalize: true
+  device: cuda:0

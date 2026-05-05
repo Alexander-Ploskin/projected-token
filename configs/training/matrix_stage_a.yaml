@@ -1,0 +1,6 @@
+configs:
+  - configs/training/stage_a_mlp_st_mnr_mean.yaml
+  - configs/training/stage_a_mlp_st_infonce_hardneg.yaml
+  - configs/training/stage_a_mlp_ms_marco_infonce.yaml
+  - configs/training/stage_a_lora_st_infonce.yaml
+summary_output: artifacts/results/matrix/stage_a_summary.json

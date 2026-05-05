@@ -25,6 +25,13 @@ def last_token_pool(last_hidden_states, attention_mask):
     return last_hidden_states[torch.arange(batch_size, device=last_hidden_states.device), sequence_lengths]
 
 
+def mean_pool(last_hidden_states, attention_mask):
+    mask = attention_mask.unsqueeze(-1).to(last_hidden_states.dtype)
+    summed = (last_hidden_states * mask).sum(dim=1)
+    counts = mask.sum(dim=1).clamp(min=1.0)
+    return summed / counts
+
+
 def load_local_corpus(corpus_path: str, max_samples: int = None):
     """Load corpus from local JSONL.gz file."""
     texts = []
@@ -51,6 +58,9 @@ def generate_teacher_embeddings(
     dataset_name: str = None,
     corpus_path: str = None,
     device: str = "cuda:0",
+    teacher_model_name: str = "/data/huggingface/Salesforce/SFR-Embedding-Mistral",
+    pooling: str = "auto",
+    prompt_style: str = "auto",
 ):
     """Generate teacher embeddings and save to HDF5."""
     
@@ -73,10 +83,10 @@ def generate_teacher_embeddings(
         texts = dataset["text"]
         print(f"Dataset size: {len(texts)}")
     
-    print(f"Loading teacher model: Salesforce/SFR-Embedding-Mistral")
-    tokenizer = AutoTokenizer.from_pretrained("/data/huggingface/Salesforce/SFR-Embedding-Mistral")
+    print(f"Loading teacher model: {teacher_model_name}")
+    tokenizer = AutoTokenizer.from_pretrained(teacher_model_name)
     model = AutoModel.from_pretrained(
-        "/data/huggingface/Salesforce/SFR-Embedding-Mistral",
+        teacher_model_name,
         torch_dtype=torch.bfloat16
     ).to(device).eval()
     print("Teacher model loaded")
@@ -84,34 +94,63 @@ def generate_teacher_embeddings(
     print(f"Generating embeddings for {num_samples} samples...")
     
     with h5py.File(output_path, 'w') as f:
-        emb_dataset = f.create_dataset('embeddings', shape=(num_samples, 4096), dtype='float32')
+        emb_dataset = None
         text_dataset = f.create_dataset('texts', shape=(num_samples,), dtype=h5py.string_dtype(encoding='utf-8'))
-        
+
+        lower_name = teacher_model_name.lower()
         for i in tqdm(range(0, num_samples, batch_size)):
             batch_texts = texts[i:i+batch_size]
-            
-            # Apply prompt for documents (same as in eval)
-            batch_texts_with_prompt = [f"Instruct: {doc_task_def}\nQuery: {text}" for text in batch_texts]
-            
+
+            if prompt_style == "auto":
+                if "sfr-embedding-mistral" in lower_name:
+                    batch_inputs = [f"Instruct: {doc_task_def}\nQuery: {text}" for text in batch_texts]
+                elif "e5" in lower_name:
+                    batch_inputs = [f"passage: {text}" for text in batch_texts]
+                else:
+                    batch_inputs = batch_texts
+            elif prompt_style == "sfr":
+                batch_inputs = [f"Instruct: {doc_task_def}\nQuery: {text}" for text in batch_texts]
+            elif prompt_style == "e5":
+                batch_inputs = [f"passage: {text}" for text in batch_texts]
+            else:
+                batch_inputs = batch_texts
+
             inputs = tokenizer(
-                batch_texts_with_prompt,
+                batch_inputs,
                 max_length=4096,
                 padding=True,
                 truncation=True,
                 return_tensors="pt"
             ).to(device)
-            
+
             with torch.inference_mode():
                 outputs = model(**inputs)
-                embeddings = last_token_pool(outputs.last_hidden_state, inputs['attention_mask'])
+                if pooling == "auto":
+                    resolved_pooling = "last_token" if "sfr-embedding-mistral" in lower_name else "mean"
+                else:
+                    resolved_pooling = pooling
+                if resolved_pooling == "last_token":
+                    embeddings = last_token_pool(outputs.last_hidden_state, inputs['attention_mask'])
+                elif resolved_pooling == "cls":
+                    embeddings = outputs.last_hidden_state[:, 0, :]
+                else:
+                    embeddings = mean_pool(outputs.last_hidden_state, inputs['attention_mask'])
                 embeddings = F.normalize(embeddings, p=2, dim=1)
-            
+
+            if emb_dataset is None:
+                emb_dim = int(embeddings.shape[-1])
+                emb_dataset = f.create_dataset('embeddings', shape=(num_samples, emb_dim), dtype='float32')
+                f.attrs["teacher_model_name"] = teacher_model_name
+                f.attrs["pooling"] = resolved_pooling
+                f.attrs["prompt_style"] = prompt_style
+
             emb_dataset[i:i+batch_size] = embeddings.cpu().float().numpy()
-            # Save original texts (without prompt)
             text_dataset[i:i+batch_size] = batch_texts
     
+    with h5py.File(output_path, 'r') as f:
+        emb_shape = f["embeddings"].shape
     print(f"Saved embeddings to: {output_path}")
-    print(f"Shape: {num_samples} x 4096")
+    print(f"Shape: {emb_shape[0]} x {emb_shape[1]}")
 
 
 def main():
@@ -126,6 +165,9 @@ def main():
                         help="HuggingFace dataset name (e.g., Tevatron/msmarco-doc-corpus)")
     parser.add_argument("--corpus-path", type=str, default=None,
                         help="Local corpus path (e.g., /data/huggingface/Tevatron/msmarco-passage-corpus/corpus.jsonl.gz)")
+    parser.add_argument("--teacher-model-name", type=str, default="/data/huggingface/Salesforce/SFR-Embedding-Mistral")
+    parser.add_argument("--pooling", type=str, default="auto", choices=["auto", "last_token", "mean", "cls"])
+    parser.add_argument("--prompt-style", type=str, default="auto", choices=["auto", "none", "sfr", "e5"])
     parser.add_argument("--device", type=str, default="cuda:0")
     
     args = parser.parse_args()
@@ -145,6 +187,9 @@ def main():
         output_name=args.output_name,
         dataset_name=args.dataset_name,
         corpus_path=args.corpus_path,
+        teacher_model_name=args.teacher_model_name,
+        pooling=args.pooling,
+        prompt_style=args.prompt_style,
         device=args.device,
     )
 

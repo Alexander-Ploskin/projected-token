@@ -17,6 +17,7 @@ from projected_token.retrieval.beir import evaluate_beir
 from projected_token.training.matrix_runner import run_matrix
 from projected_token.training.recipe_runner import run_training
 from projected_token.training.final_report import build_final_report
+from projected_token.training.oscar_retrieval_roadmap import run_roadmap
 
 
 def _judge_config(base_url: str | None, api_key: str | None, model: str | None, config: str | None = None) -> dict[str, Any] | None:
@@ -117,6 +118,19 @@ def train(config_path: str, epochs: int | None) -> None:
 def train_matrix(config_path: str) -> None:
     """Run a predefined matrix of training configs."""
     run_matrix(config_path)
+
+
+@cli.command(name="train-roadmap")
+@click.option(
+    "--stage",
+    type=click.Choice(["all", "freeze-eval", "a", "b", "c", "d", "e"]),
+    default="all",
+)
+@click.option("--protocol-config", default="configs/retrieval/eval_protocol_oscar.yaml", type=click.Path(exists=True))
+@click.option("--no-baselines", is_flag=True, default=False)
+def train_roadmap(stage: str, protocol_config: str, no_baselines: bool) -> None:
+    """Run the staged OSCAR retrieval experiment roadmap."""
+    run_roadmap(stage=stage, protocol_config=protocol_config, run_baselines=not no_baselines)
 
 
 @cli.command(name="build-final-report")

@@ -1,0 +1,5 @@
+configs:
+  - configs/training/stage_e_full_unfreeze2_safe.yaml
+  - configs/training/stage_e_full_unfreeze4_safe.yaml
+  - configs/training/stage_e_full_lora_safe.yaml
+summary_output: artifacts/results/matrix/stage_e_full_ft_summary.json

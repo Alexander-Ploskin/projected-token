@@ -4,6 +4,7 @@ from typing import Optional
 from transformers import AutoModel
 
 from projected_token.encoders.projector import FullFineTuneProjector
+from projected_token.oscar_runtime import disable_transformers_allocator_warmup, configure_oscar_component_devices
 from projected_token.training.trainer import BaseTrainer
 from projected_token.training.dataset import create_dataloaders
 from projected_token.training.losses import get_loss_fn
@@ -66,7 +67,11 @@ class FullFineTuneTrainer(BaseTrainer):
         dataset_config: str = "triplet",
         dataset_split: str = "train",
         lr: float = 1e-4,
+        projector_lr: float | None = None,
+        compressor_lr: float | None = None,
         temperature: float = 0.02,
+        loss_name: str = "mnr",
+        use_hard_negatives: bool = False,
         val_split: float = 0.1,
         device: str = "cuda:0",
         output_dir: str = "./checkpoints/full",
@@ -74,6 +79,7 @@ class FullFineTuneTrainer(BaseTrainer):
         run_root: Optional[str] = None,
         max_train_samples: Optional[int] = None,
         max_val_samples: Optional[int] = None,
+        fallback_negative_strategy: str = "first_non_positive",
     ):
         """Инициализация.
 
@@ -94,12 +100,14 @@ class FullFineTuneTrainer(BaseTrainer):
             max_train_samples: лимит train samples
             max_val_samples: лимит val samples
         """
+        disable_transformers_allocator_warmup()
         print(f"Loading OSCAR model: {oscar_model_name}")
         oscar_model = AutoModel.from_pretrained(
             oscar_model_name,
             torch_dtype=torch.bfloat16,
             trust_remote_code=True,
         ).to(device)
+        configure_oscar_component_devices(oscar_model)
         
         # Disable vocab expansion warning
         if hasattr(oscar_model, 'compr') and hasattr(oscar_model.compr, 'config'):
@@ -135,10 +143,28 @@ class FullFineTuneTrainer(BaseTrainer):
             max_val_samples=max_val_samples,
             val_split=val_split,
             device=device,
+            fallback_negative_strategy=fallback_negative_strategy,
         )
 
-        loss_fn = get_loss_fn("mnr", scale=1.0 / temperature)
-        optimizer = torch.optim.AdamW(self.full_model.parameters(), lr=lr)
+        if loss_name == "mnr":
+            loss_fn = get_loss_fn("mnr", scale=1.0 / temperature)
+        elif loss_name == "infonce":
+            loss_fn = get_loss_fn("infonce", temperature=temperature)
+        elif loss_name == "triplet":
+            loss_fn = get_loss_fn("triplet")
+        else:
+            raise ValueError(f"Unsupported loss_name: {loss_name}")
+
+        lr_projector = float(projector_lr) if projector_lr is not None else float(lr)
+        lr_compressor = float(compressor_lr) if compressor_lr is not None else float(lr)
+        projector_params = [p for p in self.full_model.projector.parameters() if p.requires_grad]
+        compressor_params = [p for p in self.full_model.oscar_model.parameters() if p.requires_grad]
+        param_groups = []
+        if compressor_params:
+            param_groups.append({"params": compressor_params, "lr": lr_compressor})
+        if projector_params:
+            param_groups.append({"params": projector_params, "lr": lr_projector})
+        optimizer = torch.optim.AdamW(param_groups if param_groups else self.full_model.parameters(), lr=lr)
 
         super().__init__(
             model=self.full_model,
@@ -146,6 +172,7 @@ class FullFineTuneTrainer(BaseTrainer):
             val_loader=val_loader,
             loss_fn=loss_fn,
             optimizer=optimizer,
+            use_hard_negatives=use_hard_negatives,
             device=device,
             output_dir=output_dir,
             log_dir=log_dir,
@@ -190,7 +217,11 @@ def create_full_trainer(config: dict) -> FullFineTuneTrainer:
         dataset_config=config.get("dataset_config", "triplet"),
         dataset_split=config.get("dataset_split", "train"),
         lr=config.get("lr", 1e-4),
+        projector_lr=config.get("projector_lr"),
+        compressor_lr=config.get("compressor_lr"),
         temperature=config.get("temperature", 0.02),
+        loss_name=config.get("loss_name", "mnr"),
+        use_hard_negatives=bool(config.get("use_hard_negatives", False)),
         val_split=float(config.get("val_split", 0.1)),
         device=config.get("device", "cuda:0"),
         output_dir=config.get("output_dir", "./checkpoints/full"),
@@ -198,4 +229,5 @@ def create_full_trainer(config: dict) -> FullFineTuneTrainer:
         run_root=config.get("run_root"),
         max_train_samples=config.get("max_train_samples"),
         max_val_samples=config.get("max_val_samples"),
+        fallback_negative_strategy=config.get("fallback_negative_strategy", "first_non_positive"),
     )

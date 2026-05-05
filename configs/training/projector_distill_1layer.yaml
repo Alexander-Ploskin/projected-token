@@ -1,5 +1,5 @@
 recipe: distill
-oscar_model: /data/huggingface/naver/oscar-qwen2-7B
+oscar_model: naver/oscar-qwen2-7B
 teacher_embeddings: /data/teacher-embeddings/teacher_embeddings_passage_100k.h5
 embed_dim: 768
 pooler: mean

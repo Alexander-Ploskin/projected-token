@@ -1,0 +1,5 @@
+configs:
+  - configs/training/stage_b_distill_e5_base.yaml
+  - configs/training/stage_b_distill_bge_base.yaml
+  - configs/training/stage_b_distill_e5_large.yaml
+summary_output: artifacts/results/matrix/stage_b_distill_summary.json

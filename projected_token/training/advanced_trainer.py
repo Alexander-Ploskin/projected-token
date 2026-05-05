@@ -27,6 +27,7 @@ project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 from projected_token.encoders.projector import MEMProjector
+from projected_token.oscar_runtime import disable_transformers_allocator_warmup, configure_oscar_component_devices
 from projected_token.training.losses import get_loss_fn
 
 
@@ -275,6 +276,9 @@ class AdvancedProjectorTrainer:
         lr: float = 1e-4,
         temperature: float = 0.1,
         distillation_weight: float = 0.3,
+        distillation_weight_start: Optional[float] = None,
+        distillation_weight_end: Optional[float] = None,
+        distillation_curriculum_epochs: Optional[int] = None,
         mnr_scale: float = 20.0,
         val_split: float = 0.1,
         device: str = "cuda:0",
@@ -309,14 +313,31 @@ class AdvancedProjectorTrainer:
         """
         self.device = torch.device(device)
         self.use_query_dependent = use_query_dependent
+        self.distillation_weight_start = (
+            float(distillation_weight_start)
+            if distillation_weight_start is not None
+            else float(distillation_weight)
+        )
+        self.distillation_weight_end = (
+            float(distillation_weight_end)
+            if distillation_weight_end is not None
+            else float(distillation_weight)
+        )
+        self.distillation_curriculum_epochs = (
+            int(distillation_curriculum_epochs)
+            if distillation_curriculum_epochs is not None
+            else None
+        )
         
         # Load OSCAR model (frozen)
+        disable_transformers_allocator_warmup()
         print(f"Loading OSCAR model: {oscar_model_name}")
         self.oscar_model = AutoModel.from_pretrained(
             oscar_model_name,
             torch_dtype=torch.bfloat16,
             trust_remote_code=True,
         ).to(device).eval()
+        configure_oscar_component_devices(self.oscar_model)
         
         # Disable vocab expansion warning
         if hasattr(self.oscar_model, 'compr') and hasattr(self.oscar_model.compr, 'config'):
@@ -393,6 +414,9 @@ class AdvancedProjectorTrainer:
             "lr": lr,
             "temperature": temperature,
             "distillation_weight": distillation_weight,
+            "distillation_weight_start": self.distillation_weight_start,
+            "distillation_weight_end": self.distillation_weight_end,
+            "distillation_curriculum_epochs": self.distillation_curriculum_epochs,
             "mnr_scale": mnr_scale,
             "use_query_dependent": use_query_dependent,
         }
@@ -470,7 +494,12 @@ class AdvancedProjectorTrainer:
         
         return mem_emb
     
-    def _encode_with_projector(self, texts: List[str], is_query: bool = False) -> torch.Tensor:
+    def _encode_with_projector(
+        self,
+        texts: List[str],
+        is_query: bool = False,
+        conditioning_queries: Optional[List[str]] = None,
+    ) -> torch.Tensor:
         """Encode texts through OSCAR + projector.
         
         Args:
@@ -480,8 +509,19 @@ class AdvancedProjectorTrainer:
         Returns:
             [batch, embed_dim] projected embeddings
         """
-        # Get OSCAR embeddings
-        oscar_emb = self._encode_with_oscar(texts, is_query=is_query)
+        if (
+            self.use_query_dependent
+            and not is_query
+            and conditioning_queries is not None
+            and len(conditioning_queries) == len(texts)
+        ):
+            conditioned_texts = [
+                f"Q: {q}\nD: {d}"
+                for q, d in zip(conditioning_queries, texts)
+            ]
+            oscar_emb = self._encode_with_oscar(conditioned_texts, is_query=is_query)
+        else:
+            oscar_emb = self._encode_with_oscar(texts, is_query=is_query)
         
         # Project
         proj_emb = self.projector(oscar_emb)
@@ -508,8 +548,12 @@ class AdvancedProjectorTrainer:
         
         # Get student embeddings from projector
         query_emb = self._encode_with_projector(queries, is_query=True)
-        pos_emb = self._encode_with_projector(positives, is_query=False)
-        neg_emb = self._encode_with_projector(negatives, is_query=False)
+        pos_emb = self._encode_with_projector(
+            positives, is_query=False, conditioning_queries=queries
+        )
+        neg_emb = self._encode_with_projector(
+            negatives, is_query=False, conditioning_queries=queries
+        )
         
         # Compute loss
         losses = self.loss_fn(
@@ -542,8 +586,12 @@ class AdvancedProjectorTrainer:
         
         with torch.inference_mode():
             query_emb = self._encode_with_projector(queries, is_query=True)
-            pos_emb = self._encode_with_projector(positives, is_query=False)
-            neg_emb = self._encode_with_projector(negatives, is_query=False)
+            pos_emb = self._encode_with_projector(
+                positives, is_query=False, conditioning_queries=queries
+            )
+            neg_emb = self._encode_with_projector(
+                negatives, is_query=False, conditioning_queries=queries
+            )
             
             losses = self.loss_fn(
                 query_emb=query_emb,
@@ -587,9 +635,11 @@ class AdvancedProjectorTrainer:
             "mnr_loss": losses["mnr_loss"].item(),
         }
     
-    def train_epoch(self, epoch: int) -> Dict[str, float]:
+    def train_epoch(self, epoch: int, distillation_weight: Optional[float] = None) -> Dict[str, float]:
         """Train for one epoch."""
         self.projector.train()
+        if distillation_weight is not None:
+            self.loss_fn.distillation_weight = float(distillation_weight)
         
         epoch_losses = {"total_loss": [], "mnr_loss": [], "distillation_loss": []}
         
@@ -666,6 +716,7 @@ class AdvancedProjectorTrainer:
     def train(
         self,
         num_epochs: int,
+        val_every_n_steps: int = 0,
         save_every: int = 1,
     ):
         """Full training loop.
@@ -682,9 +733,18 @@ class AdvancedProjectorTrainer:
         for epoch in range(1, num_epochs + 1):
             print(f"\n--- Epoch {epoch}/{num_epochs} ---")
             
-            # Train
-            train_losses = self.train_epoch(epoch)
+            if self.distillation_curriculum_epochs and self.distillation_curriculum_epochs > 1:
+                progress = min((epoch - 1) / float(self.distillation_curriculum_epochs - 1), 1.0)
+                distill_w = (
+                    (1.0 - progress) * self.distillation_weight_start
+                    + progress * self.distillation_weight_end
+                )
+            else:
+                distill_w = self.distillation_weight_end
+
+            train_losses = self.train_epoch(epoch, distillation_weight=distill_w)
             print(f"Train losses: {train_losses}")
+            print(f"Distillation weight: {distill_w:.4f}")
             
             # Validate
             val_losses = self.validate()
@@ -702,6 +762,22 @@ class AdvancedProjectorTrainer:
                     best_path = self.output_dir / "best_model.pt"
                     torch.save(self.projector.state_dict(), best_path)
                     print(f"New best model saved!")
+            metrics_payload = {
+                "epoch": epoch,
+                "train": train_losses,
+                "val": val_losses,
+                "distillation_weight": distill_w,
+                "best_val_loss": self.best_val_loss,
+            }
+            with open(self.output_dir / "metrics.json", "w") as f:
+                json.dump(metrics_payload, f, indent=2)
+
+            history_path = self.log_dir / "advanced_train_history.json"
+            history = []
+            if history_path.exists():
+                history = json.loads(history_path.read_text(encoding="utf-8"))
+            history.append(metrics_payload)
+            history_path.write_text(json.dumps(history, indent=2), encoding="utf-8")
         
         print("\n" + "=" * 60)
         print("TRAINING COMPLETE")
@@ -723,6 +799,9 @@ def create_advanced_trainer(config: dict) -> AdvancedProjectorTrainer:
         lr=float(config.get("lr", 1e-4)),
         temperature=float(config.get("temperature", 0.1)),
         distillation_weight=float(config.get("distillation_weight", 0.3)),
+        distillation_weight_start=config.get("distillation_weight_start"),
+        distillation_weight_end=config.get("distillation_weight_end"),
+        distillation_curriculum_epochs=config.get("distillation_curriculum_epochs"),
         mnr_scale=float(config.get("mnr_scale", 20.0)),
         val_split=float(config.get("val_split", 0.1)),
         device=config.get("device", "cuda:0"),
