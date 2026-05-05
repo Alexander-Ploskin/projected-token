@@ -1,0 +1,4 @@
+{
+  "short_popqa_error": "data/eval/popqa/short_popqa.parquet",
+  "popqa_title_error": "data/eval/popqa/popqa_title_only.parquet"
+}

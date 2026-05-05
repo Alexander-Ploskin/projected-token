@@ -1,0 +1,49 @@
+{
+  "datasets": {
+    "msmarco": {
+      "pairs": 160,
+      "plots": {
+        "sfr_baseline": "artifacts/analysis/tsne_retrieval_models_v3/msmarco/sfr_baseline_tsne.png",
+        "oscar_first": "artifacts/analysis/tsne_retrieval_models_v3/msmarco/oscar_first_tsne.png",
+        "oscar_last": "artifacts/analysis/tsne_retrieval_models_v3/msmarco/oscar_last_tsne.png",
+        "oscar_flatten": "artifacts/analysis/tsne_retrieval_models_v3/msmarco/oscar_flatten_tsne.png",
+        "projector_contrastive_1layer": "artifacts/analysis/tsne_retrieval_models_v3/msmarco/projector_contrastive_1layer_tsne.png",
+        "projector_contrastive_3layer": "artifacts/analysis/tsne_retrieval_models_v3/msmarco/projector_contrastive_3layer_tsne.png",
+        "projector_two_stage_1layer": "artifacts/analysis/tsne_retrieval_models_v3/msmarco/projector_two_stage_1layer_tsne.png"
+      }
+    },
+    "popqa_enriched": {
+      "pairs": 160,
+      "plots": {
+        "sfr_baseline": "artifacts/analysis/tsne_retrieval_models_v3/popqa_enriched/sfr_baseline_tsne.png",
+        "oscar_first": "artifacts/analysis/tsne_retrieval_models_v3/popqa_enriched/oscar_first_tsne.png",
+        "oscar_last": "artifacts/analysis/tsne_retrieval_models_v3/popqa_enriched/oscar_last_tsne.png",
+        "oscar_flatten": "artifacts/analysis/tsne_retrieval_models_v3/popqa_enriched/oscar_flatten_tsne.png",
+        "projector_contrastive_1layer": "artifacts/analysis/tsne_retrieval_models_v3/popqa_enriched/projector_contrastive_1layer_tsne.png",
+        "projector_contrastive_3layer": "artifacts/analysis/tsne_retrieval_models_v3/popqa_enriched/projector_contrastive_3layer_tsne.png",
+        "projector_two_stage_1layer": "artifacts/analysis/tsne_retrieval_models_v3/popqa_enriched/projector_two_stage_1layer_tsne.png"
+      }
+    },
+    "scifact": {
+      "pairs": 160,
+      "plots": {
+        "sfr_baseline": "artifacts/analysis/tsne_retrieval_models_v3/scifact/sfr_baseline_tsne.png",
+        "oscar_first": "artifacts/analysis/tsne_retrieval_models_v3/scifact/oscar_first_tsne.png",
+        "oscar_last": "artifacts/analysis/tsne_retrieval_models_v3/scifact/oscar_last_tsne.png",
+        "oscar_flatten": "artifacts/analysis/tsne_retrieval_models_v3/scifact/oscar_flatten_tsne.png",
+        "projector_contrastive_1layer": "artifacts/analysis/tsne_retrieval_models_v3/scifact/projector_contrastive_1layer_tsne.png",
+        "projector_contrastive_3layer": "artifacts/analysis/tsne_retrieval_models_v3/scifact/projector_contrastive_3layer_tsne.png",
+        "projector_two_stage_1layer": "artifacts/analysis/tsne_retrieval_models_v3/scifact/projector_two_stage_1layer_tsne.png"
+      }
+    }
+  },
+  "models": [
+    "sfr_baseline",
+    "oscar_first",
+    "oscar_last",
+    "oscar_flatten",
+    "projector_contrastive_1layer",
+    "projector_contrastive_3layer",
+    "projector_two_stage_1layer"
+  ]
+}

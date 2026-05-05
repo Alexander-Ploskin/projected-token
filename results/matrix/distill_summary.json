@@ -1,0 +1,25 @@
+{
+  "runs": [
+    {
+      "config_path": "configs/training/projector_distill_1layer.yaml",
+      "run_root": "artifacts/runs/20260428_145232_distill-projector-distill-1layer",
+      "recipe": "distill",
+      "primary_metric": 0.0,
+      "metrics_path": "artifacts/runs/20260428_145232_distill-projector-distill-1layer/metrics/distill_val_history.json"
+    },
+    {
+      "config_path": "configs/training/projector_distill_2layer.yaml",
+      "run_root": "artifacts/runs/20260428_150819_distill-projector-distill-2layer",
+      "recipe": "distill",
+      "primary_metric": 0.0,
+      "metrics_path": "artifacts/runs/20260428_150819_distill-projector-distill-2layer/metrics/distill_val_history.json"
+    },
+    {
+      "config_path": "configs/training/projector_distill_3layer.yaml",
+      "run_root": "artifacts/runs/20260428_151857_distill-projector-distill-3layer",
+      "recipe": "distill",
+      "primary_metric": 0.0,
+      "metrics_path": "artifacts/runs/20260428_151857_distill-projector-distill-3layer/metrics/distill_val_history.json"
+    }
+  ]
+}

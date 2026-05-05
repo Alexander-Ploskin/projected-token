@@ -1,0 +1,20 @@
+{
+  "contrastive": {
+    "points": 8,
+    "start_step": 0,
+    "end_step": 3500,
+    "mrr_gain_abs": 0.6378999999999999,
+    "mrr_gain_rel": 24.713754646840147,
+    "recall10_gain_abs": 0.8559,
+    "recall10_gain_rel": 20.675862068965518,
+    "loss_drop_abs": 4.8469
+  },
+  "distill": {
+    "points": 5,
+    "start_step": 372,
+    "end_step": 1860,
+    "cosine_gain_abs": 0.002350999999999992,
+    "mse_drop_abs": 0.002351,
+    "mse_drop_rel": 1.7323987538940808
+  }
+}

@@ -1,0 +1,94 @@
+{
+  "meta": {
+    "dataset_path": "/data/huggingface/sentence-transformers/msmarco-msmarco-distilbert-base-v3",
+    "dataset_config": "triplet",
+    "dataset_split": "train",
+    "val_split": 0.02,
+    "max_val_samples": 512,
+    "batch_size": 64,
+    "seed": 42
+  },
+  "rows": [
+    {
+      "mrr": 0.9530999754257322,
+      "mrr@10": 0.9522135416666666,
+      "ndcg@10": 0.958422172318268,
+      "recall@1": 0.93359375,
+      "recall@5": 0.9765625,
+      "recall@10": 0.9765625,
+      "method": "bm25_baseline"
+    },
+    {
+      "mrr": 0.9990234375,
+      "mrr@10": 0.9990234375,
+      "ndcg@10": 0.9992791596749442,
+      "recall@1": 0.998046875,
+      "recall@5": 1.0,
+      "recall@10": 1.0,
+      "method": "sfr_baseline"
+    },
+    {
+      "mrr": 0.16808434152676544,
+      "mrr@10": 0.14357716393849207,
+      "ndcg@10": 0.18862410500196103,
+      "recall@1": 0.0859375,
+      "recall@5": 0.2109375,
+      "recall@10": 0.33984375,
+      "method": "oscar_baseline_first"
+    },
+    {
+      "mrr": 0.07637958113960332,
+      "mrr@10": 0.047877914186507935,
+      "ndcg@10": 0.07177737974256312,
+      "recall@1": 0.01953125,
+      "recall@5": 0.078125,
+      "recall@10": 0.15234375,
+      "method": "oscar_baseline_last"
+    },
+    {
+      "mrr": 0.08186008002737899,
+      "mrr@10": 0.053214905753968256,
+      "ndcg@10": 0.0798949204650172,
+      "recall@1": 0.01953125,
+      "recall@5": 0.080078125,
+      "recall@10": 0.169921875,
+      "method": "oscar_baseline_flatten"
+    },
+    {
+      "mrr": 0.8420245733329549,
+      "mrr@10": 0.8404312375992065,
+      "ndcg@10": 0.8731530980694624,
+      "recall@1": 0.7578125,
+      "recall@5": 0.947265625,
+      "recall@10": 0.97265625,
+      "method": "projector_contrastive_1layer"
+    },
+    {
+      "mrr": 0.8200791619949189,
+      "mrr@10": 0.8182601686507938,
+      "ndcg@10": 0.8554913692044263,
+      "recall@1": 0.728515625,
+      "recall@5": 0.9453125,
+      "recall@10": 0.96875,
+      "method": "projector_contrastive_2layer"
+    },
+    {
+      "mrr": 0.821500104426058,
+      "mrr@10": 0.8201109871031746,
+      "ndcg@10": 0.8591551520782161,
+      "recall@1": 0.724609375,
+      "recall@5": 0.9375,
+      "recall@10": 0.978515625,
+      "method": "projector_contrastive_3layer"
+    },
+    {
+      "mrr": 0.7163068936019981,
+      "mrr@10": 0.7128743489583333,
+      "ndcg@10": 0.7686207048126767,
+      "recall@1": 0.59375,
+      "recall@5": 0.87890625,
+      "recall@10": 0.94140625,
+      "method": "projector_two_stage_1layer"
+    }
+  ]
+}
