@@ -13,7 +13,10 @@ from projected_token.generation import run_generation
 from projected_token.pipeline import run_all as run_all_experiments
 from projected_token.pipeline import run_experiment
 from projected_token.retrieval.pipeline import build_index, evaluate_retrieval
+from projected_token.retrieval.beir import evaluate_beir
+from projected_token.training.matrix_runner import run_matrix
 from projected_token.training.recipe_runner import run_training
+from projected_token.training.final_report import build_final_report
 
 
 def _judge_config(base_url: str | None, api_key: str | None, model: str | None, config: str | None = None) -> dict[str, Any] | None:
@@ -104,7 +107,42 @@ def run_all_cmd(task: str, configs_dir: str, input_path: str, output_dir: str, c
 @click.option("--epochs", type=int, default=None)
 def train(config_path: str, epochs: int | None) -> None:
     """Train a projector using a YAML recipe."""
-    run_training(config_path, epochs=epochs)
+    result = run_training(config_path, epochs=epochs)
+    if isinstance(result, dict) and result.get("run_root"):
+        click.echo(f"Artifacts saved in: {result['run_root']}")
+
+
+@cli.command(name="train-matrix")
+@click.option("--config", "config_path", required=True, type=click.Path(exists=True))
+def train_matrix(config_path: str) -> None:
+    """Run a predefined matrix of training configs."""
+    run_matrix(config_path)
+
+
+@cli.command(name="build-final-report")
+@click.option("--output-dir", required=True, type=click.Path())
+@click.option("--contrastive-summary", required=True, type=click.Path(exists=False))
+@click.option("--distill-summary", required=True, type=click.Path(exists=False))
+@click.option("--two-stage-summary", required=True, type=click.Path(exists=False))
+@click.option("--lora-summary", required=True, type=click.Path(exists=False))
+@click.option("--beir-summary", required=True, type=click.Path(exists=False))
+def build_final_report_cmd(
+    output_dir: str,
+    contrastive_summary: str,
+    distill_summary: str,
+    two_stage_summary: str,
+    lora_summary: str,
+    beir_summary: str,
+) -> None:
+    """Aggregate matrix + BEIR summaries into final report."""
+    build_final_report(
+        output_dir=output_dir,
+        contrastive_summary=contrastive_summary,
+        distill_summary=distill_summary,
+        two_stage_summary=two_stage_summary,
+        lora_summary=lora_summary,
+        beir_summary=beir_summary,
+    )
 
 
 @cli.group()
@@ -124,18 +162,12 @@ def retrieval_evaluate(config_path: str) -> None:
     evaluate_retrieval(config_path)
 
 
-@retrieval.command(context_settings={"ignore_unknown_options": True, "allow_extra_args": True}, name="index-kilt-sfr")
-@click.pass_context
-def retrieval_index_kilt_sfr(ctx: click.Context) -> None:
-    """Index s-nlp/kilt with Salesforce/SFR-Embedding-Mistral."""
-    _run_recipe_module("projected_token.retrieval.recipes.index_kilt_sfr", tuple(ctx.args))
-
-
-@retrieval.command(context_settings={"ignore_unknown_options": True, "allow_extra_args": True}, name="index-kilt-bm25")
-@click.pass_context
-def retrieval_index_kilt_bm25(ctx: click.Context) -> None:
-    """Index s-nlp/kilt with BM25 (bm25s)."""
-    _run_recipe_module("projected_token.retrieval.recipes.index_kilt_bm25", tuple(ctx.args))
+@retrieval.command(name="evaluate-beir")
+@click.option("--config", "config_path", required=True, type=click.Path(exists=True))
+def retrieval_evaluate_beir(config_path: str) -> None:
+    """Evaluate retrieval checkpoints on BEIR-style datasets."""
+    config = load_yaml(config_path)
+    evaluate_beir(config)
 
 
 @cli.group()

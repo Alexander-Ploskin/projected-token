@@ -26,12 +26,16 @@ class LoRATrainer(BaseTrainer):
         lora_alpha: int = 16,
         lora_dropout: float = 0.1,
         batch_size: int = 64,
+        dataset_path: str = "/data/huggingface/sentence-transformers/msmarco-msmarco-distilbert-base-v3",
+        dataset_config: str = "triplet",
+        dataset_split: str = "train",
         lr: float = 1e-4,
         temperature: float = 0.02,
         val_split: float = 0.1,
         device: str = "cuda:0",
         output_dir: str = "./checkpoints/lora",
         log_dir: str = "./logs/lora",
+        run_root: Optional[str] = None,
         max_train_samples: Optional[int] = None,
         max_val_samples: Optional[int] = None,
     ):
@@ -82,6 +86,9 @@ class LoRATrainer(BaseTrainer):
         train_loader, val_loader = create_dataloaders(
             oscar_model=self.oscar_model,
             batch_size=batch_size,
+            dataset_path=dataset_path,
+            dataset_config=dataset_config,
+            dataset_split=dataset_split,
             max_train_samples=max_train_samples,
             max_val_samples=max_val_samples,
             val_split=val_split,
@@ -100,6 +107,7 @@ class LoRATrainer(BaseTrainer):
             device=device,
             output_dir=output_dir,
             log_dir=log_dir,
+            run_root=run_root,
         )
 
     def encode_documents(self, texts: list[str]) -> torch.Tensor:
@@ -135,12 +143,16 @@ def create_lora_trainer(config: dict) -> LoRATrainer:
         lora_alpha=config.get("lora_alpha", 16),
         lora_dropout=config.get("lora_dropout", 0.1),
         batch_size=config.get("batch_size", 64),
+        dataset_path=config.get("dataset_path", "/data/huggingface/sentence-transformers/msmarco-msmarco-distilbert-base-v3"),
+        dataset_config=config.get("dataset_config", "triplet"),
+        dataset_split=config.get("dataset_split", "train"),
         lr=config.get("lr", 1e-4),
         temperature=config.get("temperature", 0.02),
         val_split=float(config.get("val_split", 0.1)),
         device=config.get("device", "cuda:0"),
         output_dir=config.get("output_dir", "./checkpoints/lora"),
         log_dir=config.get("log_dir", "./logs/lora"),
+        run_root=config.get("run_root"),
         max_train_samples=config.get("max_train_samples"),
         max_val_samples=config.get("max_val_samples"),
     )

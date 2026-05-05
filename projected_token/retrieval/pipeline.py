@@ -9,6 +9,8 @@ from tqdm import tqdm
 
 from projected_token.config import load_yaml, validate_retrieval_config
 from projected_token.io import load_records, write_json
+from projected_token.artifacts import write_metrics_bundle
+from projected_token.plotting import plot_metric_comparison
 from projected_token.retrieval.encoders import build_encoder
 from projected_token.retrieval.index.vector import create_faiss_index, l2_normalize, load_faiss_index, save_faiss_index
 from projected_token.retrieval.metrics.ranking import aggregate_rankings
@@ -80,5 +82,27 @@ def evaluate_retrieval(config_path: str | Path) -> dict[str, Any]:
     ranking_cases = [(case["relevant_docs"], indices[i].tolist()) for i, case in enumerate(cases)]
     metrics = aggregate_rankings(ranking_cases, top_k)
     output_path = metric_cfg.get("output_path", "artifacts/results/retrieval_metrics.json")
-    write_json(output_path, metrics)
+    output_csv_path = metric_cfg.get(
+        "output_csv_path",
+        str(Path(output_path).with_suffix(".csv")),
+    )
+    run_id = metric_cfg.get("run_id", Path(output_path).parent.name)
+    write_metrics_bundle(
+        metrics,
+        run_id=run_id,
+        dataset=task,
+        split="eval",
+        json_path=output_path,
+        csv_path=output_csv_path,
+    )
+    recall_labels = [f"R@{k}" for k in top_k if f"recall@{k}" in metrics]
+    recall_values = [metrics[f"recall@{k}"] for k in top_k if f"recall@{k}" in metrics]
+    if recall_labels and recall_values:
+        plot_metric_comparison(
+            recall_labels,
+            recall_values,
+            output_path=Path(output_path).with_name(Path(output_path).stem + "_recall.png"),
+            title=f"{task.upper()} Recall@K",
+            y_label="recall",
+        )
     return metrics

@@ -72,6 +72,9 @@ def collate_fn(batch):
 def create_dataloaders(
     oscar_model,
     batch_size: int = 64,
+    dataset_path: str = "/data/huggingface/sentence-transformers/msmarco-msmarco-distilbert-base-v3",
+    dataset_config: str = "triplet",
+    dataset_split: str = "train",
     max_train_samples: Optional[int] = None,
     max_val_samples: Optional[int] = None,
     num_workers: int = 0,
@@ -92,7 +95,12 @@ def create_dataloaders(
     Returns:
         (train_loader, val_loader)
     """
-    full_dataset = MSMarcoDataset(split="train", max_samples=max_train_samples)
+    full_dataset = MSMarcoDataset(
+        data_path=dataset_path,
+        config=dataset_config,
+        split=dataset_split,
+        max_samples=max_train_samples,
+    )
     
     val_size = max(1, int(len(full_dataset) * val_split))
     train_size = len(full_dataset) - val_size

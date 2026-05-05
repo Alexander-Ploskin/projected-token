@@ -1,0 +1,22 @@
+dataset:
+  path: /data/popqa_enriched.parquet
+  text_col: s_wiki_content
+  id_col: id
+encoder:
+  name: salesforce
+  kwargs:
+    model_name_or_path: /data/huggingface/Salesforce/SFR-Embedding-Mistral
+    device: cuda:0
+index:
+  output_dir: artifacts/indexes/popqa_enriched_sfr_baseline
+  metric: ip
+  normalize: true
+  batch_size: 16
+task:
+  name: popqa
+  question_col: question
+metrics:
+  top_k: [1, 3, 5, 10, 20]
+  output_path: artifacts/results/retrieval/popqa_enriched_sfr_baseline_metrics.json
+  output_csv_path: artifacts/results/retrieval/popqa_enriched_sfr_baseline_metrics.csv
+  run_id: popqa_enriched_sfr_baseline

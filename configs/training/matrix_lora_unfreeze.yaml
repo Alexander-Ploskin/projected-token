@@ -1,0 +1,5 @@
+configs:
+  - configs/training/projector_full_lora.yaml
+  - configs/training/projector_full_unfreeze2.yaml
+  - configs/training/projector_full_unfreeze4.yaml
+summary_output: artifacts/results/matrix/lora_unfreeze_summary.json

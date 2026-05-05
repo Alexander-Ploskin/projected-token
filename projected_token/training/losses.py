@@ -65,16 +65,15 @@ class InfoNCELoss(nn.Module):
             sim_neg = (query_embeddings * negative_embeddings).sum(dim=-1, keepdim=True) / self.temperature
             
             logits = torch.cat([sim_pos.unsqueeze(-1), sim_neg], dim=-1)
+            labels = torch.zeros(query_embeddings.size(0), dtype=torch.long, device=query_embeddings.device)
         else:
-            sim_neg = torch.matmul(
+            # Standard in-batch InfoNCE over query-document similarities.
+            logits = torch.matmul(
                 query_embeddings,
-                query_embeddings.mT
+                positive_embeddings.mT
             ) / self.temperature
-            mask = torch.eye(query_embeddings.size(0), device=query_embeddings.device)
-            sim_neg = sim_neg.masked_fill(mask.bool(), float('-inf'))
-            logits = torch.cat([sim_pos.unsqueeze(-1), sim_neg], dim=-1)
+            labels = torch.arange(query_embeddings.size(0), device=query_embeddings.device)
 
-        labels = torch.zeros(query_embeddings.size(0), dtype=torch.long, device=query_embeddings.device)
         loss = F.cross_entropy(logits, labels)
 
         return loss

@@ -28,6 +28,9 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from projected_token.encoders.projector import DistillationProjector
+from projected_token.io import write_json, write_csv
+from projected_token.artifacts import metrics_to_rows, create_run_layout, write_config_lock
+from projected_token.plotting import plot_training_curves
 
 
 class HotpotQADataset(Dataset):
@@ -167,11 +170,18 @@ class HotpotQADistillationTrainer:
         
         self.output_dir = output_dir
         self.log_dir = log_dir
+        self.run_root = Path(output_dir).parent if Path(output_dir).name == "checkpoints" else Path(output_dir)
+        self.metrics_dir = self.run_root / "metrics"
+        self.plots_dir = self.run_root / "plots"
         
         os.makedirs(output_dir, exist_ok=True)
         os.makedirs(log_dir, exist_ok=True)
+        self.metrics_dir.mkdir(parents=True, exist_ok=True)
+        self.plots_dir.mkdir(parents=True, exist_ok=True)
         
         self.writer = SummaryWriter(log_dir=log_dir)
+        self.train_history: list[dict[str, float]] = []
+        self.val_history: list[dict[str, float]] = []
     
     def encode_texts(self, texts: List[str]) -> torch.Tensor:
         """Encode texts using OSCAR + projector."""
@@ -314,6 +324,47 @@ class HotpotQADistillationTrainer:
             with open(best_config_path, 'w') as f:
                 json.dump(self.projector_config, f, indent=2)
             print(f"Saved best model to {best_path}")
+
+    def _export_reports(self) -> None:
+        run_id = self.run_root.name
+        write_json(self.metrics_dir / "hotpot_train_history.json", self.train_history)
+        write_json(self.metrics_dir / "hotpot_val_history.json", self.val_history)
+        train_rows = []
+        for row in self.train_history:
+            train_rows.extend(
+                metrics_to_rows(
+                    {"loss": row["loss"], "cosine_sim": row["cosine_sim"]},
+                    run_id=run_id,
+                    dataset="hotpot_train",
+                    split=f"epoch_{row['epoch']}",
+                )
+            )
+        val_rows = []
+        for row in self.val_history:
+            val_rows.extend(
+                metrics_to_rows(
+                    {"cosine_loss": row["cosine_loss"], "cosine_sim": row["cosine_sim"]},
+                    run_id=run_id,
+                    dataset="hotpot_val",
+                    split=f"step_{row['step']}",
+                )
+            )
+        write_csv(self.metrics_dir / "hotpot_train_history.csv", train_rows)
+        write_csv(self.metrics_dir / "hotpot_val_history.csv", val_rows)
+        plot_training_curves(
+            self.train_history,
+            x_key="epoch",
+            output_path=self.plots_dir / "hotpot_train_curves.png",
+            title="Hotpot Distill Train Curves",
+            metric_keys=["loss", "cosine_sim"],
+        )
+        plot_training_curves(
+            self.val_history,
+            x_key="step",
+            output_path=self.plots_dir / "hotpot_val_curves.png",
+            title="Hotpot Distill Validation Curves",
+            metric_keys=["cosine_loss", "cosine_sim"],
+        )
     
     def train(self, num_epochs: int, val_every_n_steps: int = 500):
         """Main training loop."""
@@ -328,11 +379,13 @@ class HotpotQADistillationTrainer:
         # Initial validation
         print("--- Initial Validation ---")
         val_metrics = self.validate(0)
+        self.val_history.append({"step": 0, **val_metrics})
         self.save_checkpoint(0, val_metrics, True)
         best_cosine_sim = val_metrics['cosine_sim']
         
         for epoch in range(1, num_epochs + 1):
             train_metrics = self.train_epoch(epoch)
+            self.train_history.append({"epoch": epoch, **train_metrics})
             print(f"\nEpoch {epoch} summary:")
             print(f"  Loss: {train_metrics['loss']:.4f}, Cosine: {train_metrics['cosine_sim']:.4f}")
             
@@ -344,6 +397,7 @@ class HotpotQADistillationTrainer:
             # Validate
             step += len(self.train_dataset) // self.batch_size
             val_metrics = self.validate(step)
+            self.val_history.append({"step": step, **val_metrics})
             
             is_best = val_metrics['cosine_sim'] > best_cosine_sim
             if is_best:
@@ -357,6 +411,7 @@ class HotpotQADistillationTrainer:
         print(f"\n{'='*60}")
         print(f"Training complete! Best cosine sim: {best_cosine_sim:.4f}")
         print(f"{'='*60}")
+        self._export_reports()
         
         self.writer.close()
         
@@ -383,8 +438,33 @@ def main():
                         default="./checkpoints/hotpot_projector_distill")
     parser.add_argument("--log-dir", type=str,
                         default="./logs/hotpot_projector_distill")
+    parser.add_argument("--run-id", type=str, default=None)
     
     args = parser.parse_args()
+    if args.output_dir and args.log_dir:
+        output_dir = Path(args.output_dir)
+        log_dir = Path(args.log_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        log_dir.mkdir(parents=True, exist_ok=True)
+        run_root = output_dir.parent if output_dir.name == "checkpoints" else output_dir
+    else:
+        layout = create_run_layout("hotpot-distill", run_id=args.run_id)
+        output_dir = layout.checkpoints_dir
+        log_dir = layout.logs_dir
+        run_root = layout.root
+    config_lock = {
+        "recipe": "hotpot_distill",
+        "oscar_model": args.oscar_model,
+        "embeddings_path": args.embeddings_path,
+        "embed_dim": args.embed_dim,
+        "projector_hidden_dim": args.projector_hidden_dim,
+        "batch_size": args.batch_size,
+        "lr": args.lr,
+        "epochs": args.epochs,
+        "use_contexts": args.use_contexts,
+        "device": args.device,
+    }
+    write_config_lock(config_lock, run_root / "config.lock.yaml")
     
     trainer = HotpotQADistillationTrainer(
         oscar_model_name=args.oscar_model,
@@ -395,8 +475,8 @@ def main():
         lr=args.lr,
         use_contexts=args.use_contexts,
         device=args.device,
-        output_dir=args.output_dir,
-        log_dir=args.log_dir,
+        output_dir=str(output_dir),
+        log_dir=str(log_dir),
     )
     
     trainer.train(num_epochs=args.epochs)

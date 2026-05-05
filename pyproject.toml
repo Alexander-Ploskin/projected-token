@@ -32,7 +32,6 @@ peft = "^0.19.0"
 sentencepiece = "^0.2.1"
 tiktoken = "^0.12.0"
 faiss-cpu = "^1.13.2"
-bm25s = "^0.3.2"
 sentence-transformers = "^5.4.1"
 matplotlib = "^3.10.8"
 h5py = "^3.16.0"
@@ -40,6 +39,13 @@ pyyaml = "^6.0.2"
 
 [tool.poetry.scripts]
 projected-token = "projected_token.cli.main:cli"
+
+
+[[tool.poetry.source]]
+name = "artifactory-internal"
+url = "https://artifactory.s.o3.ru/artifactory/api/pypi/pypi-virtual/simple"
+priority = "primary"
+
 
 [tool.poetry.extras]
 alignscore = ["spacy"]

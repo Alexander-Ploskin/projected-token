@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional, Literal
-from peft import LoraConfig, get_peft_model, PeftModel
+from peft import LoraConfig, get_peft_model
 
 
 PoolerType = Literal["mean", "first", "last", "max", "mean_max", "flatten"]
@@ -173,6 +173,7 @@ class LoRAMEMProjector(BaseMEMProjector):
     def forward(self, mem_hiddens: torch.Tensor) -> torch.Tensor:
         pooled = self.pool(mem_hiddens)
         embeddings = self.mlp(pooled)
+        embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=-1)
         return embeddings
 
     def print_trainable_parameters(self):
@@ -197,8 +198,10 @@ class FullFineTuneProjector(BaseMEMProjector):
         oscar_model: nn.Module,
         embed_dim: int = 768,
         pooler: PoolerType = "mean",
+        apply_lora: bool = True,
         oscar_lora_r: int = 8,
         oscar_lora_alpha: int = 16,
+        oscar_lora_dropout: float = 0.1,
         projector_num_layers: int = 2,
         projector_dropout: float = 0.1,
     ):
@@ -208,15 +211,16 @@ class FullFineTuneProjector(BaseMEMProjector):
         self.oscar_model = oscar_model
         self.projector_num_layers = projector_num_layers
 
-        lora_config = LoraConfig(
-            r=oscar_lora_r,
-            lora_alpha=oscar_lora_alpha,
-            target_modules=["q_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
-            lora_dropout=0.1,
-            bias="none",
-            task_type="FEATURE_EXTRACTION",
-        )
-        self.oscar_model = get_peft_model(self.oscar_model, lora_config)
+        if apply_lora:
+            lora_config = LoraConfig(
+                r=oscar_lora_r,
+                lora_alpha=oscar_lora_alpha,
+                target_modules=["q_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+                lora_dropout=oscar_lora_dropout,
+                bias="none",
+                task_type="FEATURE_EXTRACTION",
+            )
+            self.oscar_model = get_peft_model(self.oscar_model, lora_config)
 
         # Calculate actual input dimension based on pooler
         if pooler == "mean_max":
@@ -250,13 +254,16 @@ class FullFineTuneProjector(BaseMEMProjector):
         Returns:
             [batch, num_mem_tokens, hidden_dim]
         """
+        # During training we need gradients through OSCAR (LoRA adapters).
+        if self.training:
+            return self.oscar_model.compress_documents(documents=documents)
         with torch.inference_mode():
-            mem_embeddings = self.oscar_model.compress_documents(documents=documents)
-        return mem_embeddings
+            return self.oscar_model.compress_documents(documents=documents)
 
     def forward(self, mem_hiddens: torch.Tensor) -> torch.Tensor:
         pooled = self.pool(mem_hiddens)
-        embeddings = self.mlp(pooled)
+        embeddings = self.projector(pooled)
+        embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=-1)
         return embeddings
 
     def forward_full(self, documents: list[str]) -> torch.Tensor:
@@ -298,6 +305,7 @@ class DistillationProjector(nn.Module):
         oscar_hidden_dim: int = 3584,
         embed_dim: int = 4096,
         hidden_dim: int = 8192,
+        num_layers: int = 2,
         use_normalize: bool = True,
     ):
         super().__init__()
@@ -305,17 +313,22 @@ class DistillationProjector(nn.Module):
         self.oscar_hidden_dim = oscar_hidden_dim
         self.embed_dim = embed_dim
         self.hidden_dim = hidden_dim
+        self.num_layers = num_layers
         self.use_normalize = use_normalize
         
         # Input: 8 * oscar_hidden_dim = 28672 (для flatten pooler)
         input_dim = 8 * oscar_hidden_dim
         
-        self.mlp = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
-            nn.GELU(),
-            nn.Linear(hidden_dim, embed_dim),
-        )
+        layers = []
+        in_dim = input_dim
+        for i in range(num_layers):
+            out_dim = embed_dim if i == num_layers - 1 else hidden_dim
+            layers.append(nn.Linear(in_dim, out_dim))
+            if i < num_layers - 1:
+                layers.append(nn.LayerNorm(out_dim))
+                layers.append(nn.GELU())
+            in_dim = out_dim
+        self.mlp = nn.Sequential(*layers)
     
     def forward(self, mem_hiddens: torch.Tensor) -> torch.Tensor:
         """Forward pass."""

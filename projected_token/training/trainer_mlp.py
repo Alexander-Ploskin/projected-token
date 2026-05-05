@@ -1,8 +1,6 @@
 import torch
-import torch.nn as nn
-from torch.utils.data import DataLoader
 from typing import Optional
-from transformers import AutoModel, AutoTokenizer
+from transformers import AutoModel
 
 from projected_token.encoders.projector import MEMProjector
 from projected_token.training.trainer import BaseTrainer
@@ -25,12 +23,17 @@ class MLPTrainer(BaseTrainer):
         num_layers: int = 2,
         dropout: float = 0.1,
         batch_size: int = 64,
+        dataset_path: str = "/data/huggingface/sentence-transformers/msmarco-msmarco-distilbert-base-v3",
+        dataset_config: str = "triplet",
+        dataset_split: str = "train",
+        init_projector_checkpoint: Optional[str] = None,
         lr: float = 1e-4,
         temperature: float = 0.02,
         val_split: float = 0.1,
         device: str = "cuda:0",
         output_dir: str = "./checkpoints/mlp",
         log_dir: str = "./logs/mlp",
+        run_root: Optional[str] = None,
         max_train_samples: Optional[int] = None,
         max_val_samples: Optional[int] = None,
     ):
@@ -74,12 +77,21 @@ class MLPTrainer(BaseTrainer):
             dropout=dropout,
         ).to(device=device, dtype=torch.bfloat16)
 
+        if init_projector_checkpoint:
+            state = torch.load(init_projector_checkpoint, map_location=device)
+            state_dict = state.get("model_state_dict", state)
+            self.projector.load_state_dict(state_dict, strict=False)
+            print(f"Loaded initial projector checkpoint: {init_projector_checkpoint}")
+
         print("Projector architecture:")
         print(self.projector)
 
         train_loader, val_loader = create_dataloaders(
             oscar_model=self.oscar_model,
             batch_size=batch_size,
+            dataset_path=dataset_path,
+            dataset_config=dataset_config,
+            dataset_split=dataset_split,
             max_train_samples=max_train_samples,
             max_val_samples=max_val_samples,
             val_split=val_split,
@@ -95,6 +107,10 @@ class MLPTrainer(BaseTrainer):
             "pooler": pooler,
             "num_layers": num_layers,
             "dropout": dropout,
+            "dataset_path": dataset_path,
+            "dataset_config": dataset_config,
+            "dataset_split": dataset_split,
+            "init_projector_checkpoint": init_projector_checkpoint,
         }
 
         super().__init__(
@@ -106,6 +122,7 @@ class MLPTrainer(BaseTrainer):
             device=device,
             output_dir=output_dir,
             log_dir=log_dir,
+            run_root=run_root,
         )
 
         self.model_config = self.projector_config
@@ -143,12 +160,17 @@ def create_mlp_trainer(config: dict) -> MLPTrainer:
         num_layers=config.get("num_layers", 2),
         dropout=float(config.get("dropout", 0.1)),
         batch_size=int(config.get("batch_size", 64)),
+        dataset_path=config.get("dataset_path", "/data/huggingface/sentence-transformers/msmarco-msmarco-distilbert-base-v3"),
+        dataset_config=config.get("dataset_config", "triplet"),
+        dataset_split=config.get("dataset_split", "train"),
+        init_projector_checkpoint=config.get("init_projector_checkpoint"),
         lr=float(config.get("lr", 1e-4)),
         temperature=float(config.get("temperature", 0.02)),
         val_split=float(config.get("val_split", 0.1)),
         device=config.get("device", "cuda:0"),
         output_dir=config.get("output_dir", "./checkpoints/mlp"),
         log_dir=config.get("log_dir", "./logs/mlp"),
+        run_root=config.get("run_root"),
         max_train_samples=config.get("max_train_samples"),
         max_val_samples=config.get("max_val_samples"),
     )

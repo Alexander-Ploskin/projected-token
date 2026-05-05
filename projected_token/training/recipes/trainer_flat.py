@@ -29,6 +29,9 @@ sys.path.insert(0, str(project_root))
 
 from projected_token.encoders.projector import MEMProjector
 from projected_token.training.losses import get_loss_fn
+from projected_token.io import write_json, write_csv
+from projected_token.artifacts import metrics_to_rows
+from projected_token.plotting import plot_training_curves
 
 
 class MixedDomainDataset(Dataset):
@@ -165,7 +168,13 @@ class FlattenProjectorTrainer:
         if len(self.devices) > 1:
             print(f"Using {len(self.devices)} GPUs: {self.devices}")
             print("Note: OSCAR encoder stays on primary device, only projector is parallelized")
-            self.projector = nn.DataParallel(self.projector, device_ids=list(range(len(self.devices))))
+            device_ids = []
+            for item in self.devices:
+                if item.startswith("cuda:"):
+                    device_ids.append(int(item.split(":")[1]))
+            if not device_ids:
+                device_ids = list(range(len(self.devices)))
+            self.projector = nn.DataParallel(self.projector, device_ids=device_ids)
         
         print("Projector architecture:")
         print(self.projector)
@@ -193,12 +202,19 @@ class FlattenProjectorTrainer:
         self.optimizer = optimizer
         self.output_dir = output_dir
         self.log_dir = log_dir
+        self.run_root = Path(output_dir).parent if Path(output_dir).name == "checkpoints" else Path(output_dir)
+        self.metrics_dir = self.run_root / "metrics"
+        self.plots_dir = self.run_root / "plots"
         
         os.makedirs(output_dir, exist_ok=True)
         os.makedirs(log_dir, exist_ok=True)
+        self.metrics_dir.mkdir(parents=True, exist_ok=True)
+        self.plots_dir.mkdir(parents=True, exist_ok=True)
         
         self.writer = SummaryWriter(log_dir=log_dir)
         self.best_val_loss = float('inf')
+        self.train_history: list[dict[str, float]] = []
+        self.val_history: list[dict[str, float]] = []
     
     def load_dataset(self, data_path: str, val_split: float = 0.1):
         """Load and split dataset."""
@@ -629,6 +645,50 @@ class FlattenProjectorTrainer:
             with open(best_config_path, 'w') as f:
                 json.dump(self.projector_config, f, indent=2)
             print(f"Saved best model to {best_path}")
+
+    def _export_reports(self) -> None:
+        run_id = self.run_root.name
+        write_json(self.metrics_dir / "flat_train_history.json", self.train_history)
+        write_json(self.metrics_dir / "flat_val_history.json", self.val_history)
+
+        train_rows: list[dict[str, float | str | int | None]] = []
+        for row in self.train_history:
+            train_rows.extend(
+                metrics_to_rows(
+                    {k: v for k, v in row.items() if k not in {"step", "epoch"}},
+                    run_id=run_id,
+                    dataset="flat_train",
+                    split=f"epoch_{int(row.get('epoch', 0))}_step_{int(row.get('step', 0))}",
+                )
+            )
+        val_rows: list[dict[str, float | str | int | None]] = []
+        for row in self.val_history:
+            val_rows.extend(
+                metrics_to_rows(
+                    {k: v for k, v in row.items() if k not in {"step", "epoch"}},
+                    run_id=run_id,
+                    dataset="flat_val",
+                    split=f"epoch_{int(row.get('epoch', 0))}_step_{int(row.get('step', 0))}",
+                )
+            )
+
+        write_csv(self.metrics_dir / "flat_train_history.csv", train_rows)
+        write_csv(self.metrics_dir / "flat_val_history.csv", val_rows)
+
+        plot_training_curves(
+            self.train_history,
+            x_key="step",
+            output_path=self.plots_dir / "flat_training_curves.png",
+            title="Flatten Trainer Curves",
+            metric_keys=["loss", "mrr", "recall@10"],
+        )
+        plot_training_curves(
+            self.val_history,
+            x_key="step",
+            output_path=self.plots_dir / "flat_validation_curves.png",
+            title="Flatten Validation Curves",
+            metric_keys=["loss", "mrr", "recall@10"],
+        )
     
     def train(
         self,
@@ -646,6 +706,7 @@ class FlattenProjectorTrainer:
         # Initial validation
         print("\n--- Step 0 - Initial Validation ---")
         val_metrics = self.validate(0)
+        self.val_history.append({"step": 0, "epoch": 0, **{k: v for k, v in val_metrics.items() if k != "domain_results"}})
         self._print_validation_metrics(val_metrics)
         self.save_checkpoint(0, {"val": val_metrics}, True)
         best_val_loss = val_metrics["loss"]
@@ -693,7 +754,11 @@ class FlattenProjectorTrainer:
                 query_norm = query_embeds.norm(dim=-1).mean().item()
                 self.writer.add_scalar("debug/query_norm", query_norm, step)
                 
-                metrics = self.compute_metrics(query_embeds, pos_embeds)
+                metrics = self.compute_metrics(
+                    query_embeds,
+                    pos_embeds,
+                    neg_embeds if self.use_hard_negatives else None,
+                )
                 self.writer.add_scalar("train/mrr", metrics["mrr"], step)
                 
                 if self.use_hard_negatives:
@@ -701,6 +766,15 @@ class FlattenProjectorTrainer:
                     self.writer.add_scalar("train/sim_pos", sim_stats["sim_pos_mean"], step)
                     self.writer.add_scalar("train/sim_neg", sim_stats["sim_neg_mean"], step)
                     self.writer.add_scalar("train/sim_diff", sim_stats["sim_diff_mean"], step)
+                self.train_history.append({
+                    "step": step,
+                    "epoch": epoch,
+                    "loss": float(loss.item()),
+                    "mrr": float(metrics["mrr"]),
+                    "recall@1": float(metrics["recall@1"]),
+                    "recall@5": float(metrics["recall@5"]),
+                    "recall@10": float(metrics["recall@10"]),
+                })
                 
                 pbar.set_postfix({
                     "loss": f"{loss.item():.4f}",
@@ -711,6 +785,7 @@ class FlattenProjectorTrainer:
                 if step % val_every_n_steps == 0:
                     print(f"\n--- Step {step} - Validation ---")
                     val_metrics = self.validate(step)
+                    self.val_history.append({"step": step, "epoch": epoch, **{k: v for k, v in val_metrics.items() if k != "domain_results"}})
                     self._print_validation_metrics(val_metrics)
                     
                     is_best = val_metrics["loss"] < best_val_loss
@@ -722,6 +797,7 @@ class FlattenProjectorTrainer:
                     self.projector.train()
         
         print("\nTraining completed!")
+        self._export_reports()
         self.writer.close()
     
     def _print_validation_metrics(self, val_metrics: Dict[str, float]):

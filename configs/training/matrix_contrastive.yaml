@@ -1,0 +1,11 @@
+configs:
+  - configs/training/projector_mlp_1layer_msmarco.yaml
+  - configs/training/projector_mlp_2layer_msmarco.yaml
+  - configs/training/projector_mlp_3layer_msmarco.yaml
+  - configs/training/projector_mlp_1layer_msmarco_v2.yaml
+  - configs/training/projector_mlp_2layer_msmarco_v2.yaml
+  - configs/training/projector_mlp_3layer_msmarco_v2.yaml
+  - configs/training/projector_flat_mixed_1layer.yaml
+  - configs/training/projector_flat_mixed_2layer.yaml
+  - configs/training/projector_flat_mixed_3layer.yaml
+summary_output: artifacts/results/matrix/contrastive_summary.json
