@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from projected_token.config import load_yaml
+from projected_token.artifacts import create_run_layout, write_config_lock
 
 
 TRAINING_RECIPES = {
@@ -32,8 +33,9 @@ def _config_to_argv(config: dict[str, Any]) -> list[str]:
     if "cli_args" in config:
         return [str(v) for v in config["cli_args"]]
     args: list[str] = []
+    skip_keys = {"recipe", "run_root", "metrics_dir", "plots_dir"}
     for key, value in config.items():
-        if key == "recipe" or value is None:
+        if key in skip_keys or value is None:
             continue
         flag = "--" + key.replace("_", "-")
         if isinstance(value, bool):
@@ -47,16 +49,37 @@ def _config_to_argv(config: dict[str, Any]) -> list[str]:
     return args
 
 
-def run_training(config_path: str | Path, *, epochs: int | None = None) -> None:
+def _prepare_run_layout(config: dict[str, Any], recipe: str, config_path: str | Path):
+    config_name = Path(config_path).stem
+    run_id = config.get("run_id")
+    layout = create_run_layout(
+        experiment_name=f"{recipe}-{config_name}",
+        run_id=run_id,
+    )
+    config["run_root"] = str(layout.root)
+    config["output_dir"] = str(layout.checkpoints_dir)
+    config["log_dir"] = str(layout.logs_dir)
+    config["metrics_dir"] = str(layout.metrics_dir)
+    config["plots_dir"] = str(layout.plots_dir)
+    write_config_lock(config, layout.root / "config.lock.yaml")
+    print(f"[train] run_root={layout.root}")
+    return layout
+
+
+def run_training(config_path: str | Path, *, epochs: int | None = None) -> dict[str, Any]:
+    config_source_path = Path(config_path)
     config = load_yaml(config_path)
     recipe = str(config.get("recipe") or Path(config_path).stem.replace("projector_", ""))
     if epochs is not None:
         config["epochs"] = epochs
+    layout = _prepare_run_layout(config, recipe, config_path)
+    run_config_copy_path = layout.root / config_source_path.name
+    run_config_copy_path.write_text(config_source_path.read_text(encoding="utf-8"), encoding="utf-8")
     if recipe in TRAINING_RECIPES:
         factory = _import_factory(TRAINING_RECIPES[recipe])
         trainer = factory(config)
         trainer.train(num_epochs=config.get("epochs", 3), val_every_n_steps=config.get("val_every_n_steps", 100))
-        return
+        return {"run_root": str(layout.root), "recipe": recipe}
     if recipe in ARGPARSE_RECIPES:
         module = importlib.import_module(ARGPARSE_RECIPES[recipe])
         argv = [ARGPARSE_RECIPES[recipe]] + _config_to_argv(config)
@@ -66,5 +89,5 @@ def run_training(config_path: str | Path, *, epochs: int | None = None) -> None:
             module.main()
         finally:
             sys.argv = old_argv
-        return
+        return {"run_root": str(layout.root), "recipe": recipe}
     raise ValueError(f"Unknown training recipe: {recipe}")

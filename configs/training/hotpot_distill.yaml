@@ -1,5 +1,6 @@
 recipe: hotpot_distill
-embeddings_path: artifacts/teacher_embeddings/hotpotqa_teacher_embeddings.h5
+oscar_model: /data/huggingface/naver/oscar-qwen2-7B
+embeddings_path: /data/teacher-embeddings/hotpotqa_teacher_embeddings.h5
 batch_size: 128
 lr: 1.0e-3
 epochs: 10

@@ -1,0 +1,26 @@
+recipe: full
+oscar_model_name: "/data/huggingface/naver/oscar-qwen2-7B"
+
+embed_dim: 768
+pooler: "mean"
+
+apply_lora: false
+oscar_lora_r: 8
+oscar_lora_alpha: 16
+oscar_lora_dropout: 0.1
+unfreeze_last_n_layers: 2
+
+projector_num_layers: 2
+projector_dropout: 0.1
+
+dataset_path: "/data/huggingface/sentence-transformers/msmarco-msmarco-distilbert-base-v3"
+dataset_config: "triplet"
+dataset_split: "train"
+
+batch_size: 16
+lr: 2e-5
+temperature: 0.02
+epochs: 3
+val_split: 0.02
+val_every_n_steps: 200
+device: "cuda:0"

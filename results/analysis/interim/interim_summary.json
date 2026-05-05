@@ -1,0 +1,17 @@
+{
+  "contrastive_points": 8,
+  "distill_points": 5,
+  "contrastive_latest": {
+    "step": 3500,
+    "loss": 1.8211,
+    "mrr": 0.6648,
+    "recall@1": 0.5398,
+    "recall@5": 0.8222,
+    "recall@10": 0.8994
+  },
+  "distill_latest": {
+    "step": 1860,
+    "mse_loss": 0.00321,
+    "cosine_sim": 0.99679
+  }
+}

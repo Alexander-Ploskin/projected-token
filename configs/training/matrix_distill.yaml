@@ -1,0 +1,5 @@
+configs:
+  - configs/training/projector_distill_1layer.yaml
+  - configs/training/projector_distill_2layer.yaml
+  - configs/training/projector_distill_3layer.yaml
+summary_output: artifacts/results/matrix/distill_summary.json

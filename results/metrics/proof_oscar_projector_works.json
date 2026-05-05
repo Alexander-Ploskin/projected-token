@@ -1,0 +1,183 @@
+{
+  "experiment": "OSCAR + Projector on MS MARCO",
+  "num_samples": 500,
+  "metrics": {
+    "mrr": 0.5609730158730158,
+    "recall@1": 0.444,
+    "recall@5": 0.71,
+    "recall@10": 0.83
+  },
+  "sample_results": [
+    {
+      "query_idx": 0,
+      "query": "what are the liberal arts?",
+      "correct_idx": 0,
+      "rank": 1,
+      "mrr": 1.0,
+      "hit_at_1": 1,
+      "hit_at_5": 1,
+      "hit_at_10": 1,
+      "retrieved_top5": [
+        0,
+        459,
+        270,
+        237,
+        149
+      ]
+    },
+    {
+      "query_idx": 1,
+      "query": "what is the mechanism of action of fibrinolytic or thrombolytic drugs?",
+      "correct_idx": 1,
+      "rank": 1,
+      "mrr": 1.0,
+      "hit_at_1": 1,
+      "hit_at_5": 1,
+      "hit_at_10": 1,
+      "retrieved_top5": [
+        1,
+        232,
+        325,
+        164,
+        125
+      ]
+    },
+    {
+      "query_idx": 2,
+      "query": "what is normal plat count",
+      "correct_idx": 2,
+      "rank": 1,
+      "mrr": 1.0,
+      "hit_at_1": 1,
+      "hit_at_5": 1,
+      "hit_at_10": 1,
+      "retrieved_top5": [
+        2,
+        130,
+        56,
+        288,
+        382
+      ]
+    },
+    {
+      "query_idx": 3,
+      "query": "dollar cost averaging explained",
+      "correct_idx": 3,
+      "rank": 9,
+      "mrr": 0.1111111111111111,
+      "hit_at_1": 0,
+      "hit_at_5": 0,
+      "hit_at_10": 1,
+      "retrieved_top5": [
+        247,
+        99,
+        175,
+        122,
+        110
+      ]
+    },
+    {
+      "query_idx": 4,
+      "query": "foods that help fight gout",
+      "correct_idx": 4,
+      "rank": -1,
+      "mrr": 0.0,
+      "hit_at_1": 0,
+      "hit_at_5": 0,
+      "hit_at_10": 0,
+      "retrieved_top5": [
+        76,
+        476,
+        446,
+        134,
+        353
+      ]
+    },
+    {
+      "query_idx": 5,
+      "query": "which act requires manufacturers to disclose the origins of their minerals?",
+      "correct_idx": 5,
+      "rank": -1,
+      "mrr": 0.0,
+      "hit_at_1": 0,
+      "hit_at_5": 0,
+      "hit_at_10": 0,
+      "retrieved_top5": [
+        170,
+        226,
+        381,
+        445,
+        300
+      ]
+    },
+    {
+      "query_idx": 6,
+      "query": "when do you have hcg in the body",
+      "correct_idx": 6,
+      "rank": 1,
+      "mrr": 1.0,
+      "hit_at_1": 1,
+      "hit_at_5": 1,
+      "hit_at_10": 1,
+      "retrieved_top5": [
+        6,
+        323,
+        88,
+        449,
+        16
+      ]
+    },
+    {
+      "query_idx": 7,
+      "query": "average price for eye exam and contact fitting no insurance",
+      "correct_idx": 7,
+      "rank": 1,
+      "mrr": 1.0,
+      "hit_at_1": 1,
+      "hit_at_5": 1,
+      "hit_at_10": 1,
+      "retrieved_top5": [
+        7,
+        133,
+        375,
+        162,
+        302
+      ]
+    },
+    {
+      "query_idx": 8,
+      "query": "where is gordonville, pa",
+      "correct_idx": 8,
+      "rank": 2,
+      "mrr": 0.5,
+      "hit_at_1": 0,
+      "hit_at_5": 1,
+      "hit_at_10": 1,
+      "retrieved_top5": [
+        230,
+        8,
+        51,
+        69,
+        305
+      ]
+    },
+    {
+      "query_idx": 9,
+      "query": "can you grow italian cypress in pots",
+      "correct_idx": 9,
+      "rank": 2,
+      "mrr": 0.5,
+      "hit_at_1": 0,
+      "hit_at_5": 1,
+      "hit_at_10": 1,
+      "retrieved_top5": [
+        442,
+        9,
+        141,
+        334,
+        145
+      ]
+    }
+  ],
+  "direct_comparison_mean": 0.39331749081611633
+}

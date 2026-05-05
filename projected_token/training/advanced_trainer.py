@@ -76,10 +76,17 @@ class MixedDomainDataset(Dataset):
     
     def __getitem__(self, idx):
         item = self.data[idx]
+        negative = item.get("negative")
+        if negative is None:
+            negatives = item.get("negatives", [])
+            if isinstance(negatives, list) and negatives:
+                negative = negatives[0]
+            else:
+                negative = item["positive"]
         return {
             "query": item["query"],
             "positive": item["positive"],
-            "negative": item["negative"],
+            "negative": negative,
             "domain": item.get("domain", "unknown"),
         }
 
@@ -169,6 +176,7 @@ class CombinedLoss(nn.Module):
         mnr_scale: float = 20.0,
         distillation_weight: float = 0.3,
         temperature: float = 0.1,
+        teacher_projector: Optional[nn.Module] = None,
     ):
         """Initialize combined loss.
         
@@ -181,6 +189,7 @@ class CombinedLoss(nn.Module):
         self.mnr_scale = mnr_scale
         self.distillation_weight = distillation_weight
         self.distillation_loss = DistillationLoss(temperature=temperature)
+        self.teacher_projector = teacher_projector
         
         # MNR loss from existing implementation
         self.mnr_loss_fn = get_loss_fn("mnr", scale=mnr_scale)
@@ -223,9 +232,9 @@ class CombinedLoss(nn.Module):
             else:
                 teacher_pos_proj = teacher_positive_emb
             
-            # Project to 768
-            teacher_query_proj = self._teacher_projector(teacher_query_proj)
-            teacher_pos_proj = self._teacher_projector(teacher_pos_proj)
+            if self.teacher_projector is not None:
+                teacher_query_proj = self.teacher_projector(teacher_query_proj)
+                teacher_pos_proj = self.teacher_projector(teacher_pos_proj)
             
             # Distill from teacher: student should match teacher's relative rankings
             distillation_loss = self.distillation_loss(
@@ -332,6 +341,9 @@ class AdvancedProjectorTrainer:
         
         print("Projector architecture:")
         print(self.projector)
+
+        # Teacher projector: projects OSCAR hidden -> student embedding dim for distillation
+        self._teacher_projector = nn.Linear(hidden_size, embed_dim).to(device=device, dtype=torch.bfloat16)
         
         # Create data loaders
         train_loader, val_loader = self._create_dataloaders(
@@ -347,6 +359,7 @@ class AdvancedProjectorTrainer:
             mnr_scale=mnr_scale,
             distillation_weight=distillation_weight,
             temperature=temperature,
+            teacher_projector=self._teacher_projector,
         )
         
         # Optimizer - train both projector and teacher_projector
@@ -360,9 +373,6 @@ class AdvancedProjectorTrainer:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.log_dir = Path(log_dir)
         self.log_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Teacher projector: projects 3584 -> 768 for distillation
-        self._teacher_projector = nn.Linear(hidden_size, embed_dim).to(device=device, dtype=torch.bfloat16)
         
         self.global_step = 0
         self.best_val_loss = float('inf')
@@ -495,7 +505,6 @@ class AdvancedProjectorTrainer:
         with torch.inference_mode():
             teacher_query = self._encode_with_oscar(queries, is_query=True)
             teacher_pos = self._encode_with_oscar(positives, is_query=False)
-            teacher_neg = self._encode_with_oscar(negatives, is_query=False)
         
         # Get student embeddings from projector
         query_emb = self._encode_with_projector(queries, is_query=True)

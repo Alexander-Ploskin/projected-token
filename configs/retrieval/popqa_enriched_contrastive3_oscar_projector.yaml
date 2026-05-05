@@ -1,0 +1,27 @@
+dataset:
+  path: /data/popqa_enriched.parquet
+  text_col: s_wiki_content
+  id_col: id
+encoder:
+  name: oscar_projector
+  kwargs:
+    oscar_model_name: /data/huggingface/naver/oscar-qwen2-7B
+    projector_path: artifacts/runs/20260428_173204_mlp-projector-mlp-3layer-msmarco/checkpoints/best_model.pt
+    device: cuda:0
+    embed_dim: 768
+    pooler: mean
+    num_layers: 3
+    dropout: 0.1
+index:
+  output_dir: artifacts/indexes/popqa_enriched_contrastive3
+  metric: ip
+  normalize: true
+  batch_size: 8
+task:
+  name: popqa
+  question_col: question
+metrics:
+  top_k: [1, 3, 5, 10, 20]
+  output_path: artifacts/results/retrieval/popqa_enriched_contrastive3_metrics.json
+  output_csv_path: artifacts/results/retrieval/popqa_enriched_contrastive3_metrics.csv
+  run_id: popqa_enriched_contrastive3

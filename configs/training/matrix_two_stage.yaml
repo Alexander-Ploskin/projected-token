@@ -1,0 +1,5 @@
+configs:
+  - configs/training/two_stage_distill_to_contrastive_1layer.yaml
+  - configs/training/two_stage_distill_to_contrastive_2layer.yaml
+  - configs/training/two_stage_distill_to_contrastive_3layer.yaml
+summary_output: artifacts/results/matrix/two_stage_summary.json

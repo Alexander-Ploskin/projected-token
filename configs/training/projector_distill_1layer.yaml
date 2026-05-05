@@ -1,0 +1,14 @@
+recipe: distill
+oscar_model: /data/huggingface/naver/oscar-qwen2-7B
+teacher_embeddings: /data/teacher-embeddings/teacher_embeddings_passage_100k.h5
+embed_dim: 768
+pooler: mean
+dropout: 0.0
+projector_hidden_dim: 8192
+projector_type: mem
+num_layers: 1
+batch_size: 256
+lr: 1.0e-4
+epochs: 30
+val_split: 0.05
+device: cuda:0

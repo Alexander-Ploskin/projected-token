@@ -1,0 +1,506 @@
+[
+  {
+    "run_id": "beir3_sfr_gpu1",
+    "dataset": "scifact",
+    "split": "test",
+    "metric": "recall@1",
+    "value": 0.6049444444444444,
+    "encoder_fp": "5343954c92"
+  },
+  {
+    "run_id": "beir3_sfr_gpu1",
+    "dataset": "scifact",
+    "split": "test",
+    "metric": "precision@1",
+    "value": 0.6366666666666667,
+    "encoder_fp": "5343954c92"
+  },
+  {
+    "run_id": "beir3_sfr_gpu1",
+    "dataset": "scifact",
+    "split": "test",
+    "metric": "ndcg@1",
+    "value": 0.6366666666666667,
+    "encoder_fp": "5343954c92"
+  },
+  {
+    "run_id": "beir3_sfr_gpu1",
+    "dataset": "scifact",
+    "split": "test",
+    "metric": "mrr@1",
+    "value": 0.6366666666666667,
+    "encoder_fp": "5343954c92"
+  },
+  {
+    "run_id": "beir3_sfr_gpu1",
+    "dataset": "scifact",
+    "split": "test",
+    "metric": "recall@3",
+    "value": 0.7635,
+    "encoder_fp": "5343954c92"
+  },
+  {
+    "run_id": "beir3_sfr_gpu1",
+    "dataset": "scifact",
+    "split": "test",
+    "metric": "precision@3",
+    "value": 0.27888888888888885,
+    "encoder_fp": "5343954c92"
+  },
+  {
+    "run_id": "beir3_sfr_gpu1",
+    "dataset": "scifact",
+    "split": "test",
+    "metric": "ndcg@3",
+    "value": 0.7126986708230851,
+    "encoder_fp": "5343954c92"
+  },
+  {
+    "run_id": "beir3_sfr_gpu1",
+    "dataset": "scifact",
+    "split": "test",
+    "metric": "mrr@3",
+    "value": 0.7038888888888889,
+    "encoder_fp": "5343954c92"
+  },
+  {
+    "run_id": "beir3_sfr_gpu1",
+    "dataset": "scifact",
+    "split": "test",
+    "metric": "recall@5",
+    "value": 0.8181111111111111,
+    "encoder_fp": "5343954c92"
+  },
+  {
+    "run_id": "beir3_sfr_gpu1",
+    "dataset": "scifact",
+    "split": "test",
+    "metric": "precision@5",
+    "value": 0.18200000000000002,
+    "encoder_fp": "5343954c92"
+  },
+  {
+    "run_id": "beir3_sfr_gpu1",
+    "dataset": "scifact",
+    "split": "test",
+    "metric": "ndcg@5",
+    "value": 0.7341898324951146,
+    "encoder_fp": "5343954c92"
+  },
+  {
+    "run_id": "beir3_sfr_gpu1",
+    "dataset": "scifact",
+    "split": "test",
+    "metric": "mrr@5",
+    "value": 0.7163888888888889,
+    "encoder_fp": "5343954c92"
+  },
+  {
+    "run_id": "beir3_sfr_gpu1",
+    "dataset": "scifact",
+    "split": "test",
+    "metric": "recall@10",
+    "value": 0.8722222222222222,
+    "encoder_fp": "5343954c92"
+  },
+  {
+    "run_id": "beir3_sfr_gpu1",
+    "dataset": "scifact",
+    "split": "test",
+    "metric": "precision@10",
+    "value": 0.09966666666666667,
+    "encoder_fp": "5343954c92"
+  },
+  {
+    "run_id": "beir3_sfr_gpu1",
+    "dataset": "scifact",
+    "split": "test",
+    "metric": "ndcg@10",
+    "value": 0.7541146579509025,
+    "encoder_fp": "5343954c92"
+  },
+  {
+    "run_id": "beir3_sfr_gpu1",
+    "dataset": "scifact",
+    "split": "test",
+    "metric": "mrr@10",
+    "value": 0.721781746031746,
+    "encoder_fp": "5343954c92"
+  },
+  {
+    "run_id": "beir3_sfr_gpu1",
+    "dataset": "scifact",
+    "split": "test",
+    "metric": "recall@20",
+    "value": 0.93,
+    "encoder_fp": "5343954c92"
+  },
+  {
+    "run_id": "beir3_sfr_gpu1",
+    "dataset": "scifact",
+    "split": "test",
+    "metric": "precision@20",
+    "value": 0.053000000000000005,
+    "encoder_fp": "5343954c92"
+  },
+  {
+    "run_id": "beir3_sfr_gpu1",
+    "dataset": "scifact",
+    "split": "test",
+    "metric": "ndcg@20",
+    "value": 0.7688356332271774,
+    "encoder_fp": "5343954c92"
+  },
+  {
+    "run_id": "beir3_sfr_gpu1",
+    "dataset": "scifact",
+    "split": "test",
+    "metric": "mrr@20",
+    "value": 0.7253486751466628,
+    "encoder_fp": "5343954c92"
+  },
+  {
+    "run_id": "beir3_sfr_gpu1",
+    "dataset": "scifact",
+    "split": "test",
+    "metric": "mrr",
+    "value": 0.7261825664785235,
+    "encoder_fp": "5343954c92"
+  },
+  {
+    "run_id": "beir3_sfr_gpu1",
+    "dataset": "nfcorpus",
+    "split": "test",
+    "metric": "recall@1",
+    "value": 0.058968835753942066,
+    "encoder_fp": "5343954c92"
+  },
+  {
+    "run_id": "beir3_sfr_gpu1",
+    "dataset": "nfcorpus",
+    "split": "test",
+    "metric": "precision@1",
+    "value": 0.5077399380804953,
+    "encoder_fp": "5343954c92"
+  },
+  {
+    "run_id": "beir3_sfr_gpu1",
+    "dataset": "nfcorpus",
+    "split": "test",
+    "metric": "ndcg@1",
+    "value": 0.5077399380804953,
+    "encoder_fp": "5343954c92"
+  },
+  {
+    "run_id": "beir3_sfr_gpu1",
+    "dataset": "nfcorpus",
+    "split": "test",
+    "metric": "mrr@1",
+    "value": 0.5077399380804953,
+    "encoder_fp": "5343954c92"
+  },
+  {
+    "run_id": "beir3_sfr_gpu1",
+    "dataset": "nfcorpus",
+    "split": "test",
+    "metric": "recall@3",
+    "value": 0.10682088604229786,
+    "encoder_fp": "5343954c92"
+  },
+  {
+    "run_id": "beir3_sfr_gpu1",
+    "dataset": "nfcorpus",
+    "split": "test",
+    "metric": "precision@3",
+    "value": 0.40350877192982454,
+    "encoder_fp": "5343954c92"
+  },
+  {
+    "run_id": "beir3_sfr_gpu1",
+    "dataset": "nfcorpus",
+    "split": "test",
+    "metric": "ndcg@3",
+    "value": 0.44063339143949226,
+    "encoder_fp": "5343954c92"
+  },
+  {
+    "run_id": "beir3_sfr_gpu1",
+    "dataset": "nfcorpus",
+    "split": "test",
+    "metric": "mrr@3",
+    "value": 0.56656346749226,
+    "encoder_fp": "5343954c92"
+  },
+  {
+    "run_id": "beir3_sfr_gpu1",
+    "dataset": "nfcorpus",
+    "split": "test",
+    "metric": "recall@5",
+    "value": 0.14433582360994862,
+    "encoder_fp": "5343954c92"
+  },
+  {
+    "run_id": "beir3_sfr_gpu1",
+    "dataset": "nfcorpus",
+    "split": "test",
+    "metric": "precision@5",
+    "value": 0.3696594427244582,
+    "encoder_fp": "5343954c92"
+  },
+  {
+    "run_id": "beir3_sfr_gpu1",
+    "dataset": "nfcorpus",
+    "split": "test",
+    "metric": "ndcg@5",
+    "value": 0.4258606447216164,
+    "encoder_fp": "5343954c92"
+  },
+  {
+    "run_id": "beir3_sfr_gpu1",
+    "dataset": "nfcorpus",
+    "split": "test",
+    "metric": "mrr@5",
+    "value": 0.5835913312693498,
+    "encoder_fp": "5343954c92"
+  },
+  {
+    "run_id": "beir3_sfr_gpu1",
+    "dataset": "nfcorpus",
+    "split": "test",
+    "metric": "recall@10",
+    "value": 0.1886988764049188,
+    "encoder_fp": "5343954c92"
+  },
+  {
+    "run_id": "beir3_sfr_gpu1",
+    "dataset": "nfcorpus",
+    "split": "test",
+    "metric": "precision@10",
+    "value": 0.29195046439628486,
+    "encoder_fp": "5343954c92"
+  },
+  {
+    "run_id": "beir3_sfr_gpu1",
+    "dataset": "nfcorpus",
+    "split": "test",
+    "metric": "ndcg@10",
+    "value": 0.38523094426730264,
+    "encoder_fp": "5343954c92"
+  },
+  {
+    "run_id": "beir3_sfr_gpu1",
+    "dataset": "nfcorpus",
+    "split": "test",
+    "metric": "mrr@10",
+    "value": 0.5910708142906286,
+    "encoder_fp": "5343954c92"
+  },
+  {
+    "run_id": "beir3_sfr_gpu1",
+    "dataset": "nfcorpus",
+    "split": "test",
+    "metric": "recall@20",
+    "value": 0.24013984441680988,
+    "encoder_fp": "5343954c92"
+  },
+  {
+    "run_id": "beir3_sfr_gpu1",
+    "dataset": "nfcorpus",
+    "split": "test",
+    "metric": "precision@20",
+    "value": 0.21826625386996903,
+    "encoder_fp": "5343954c92"
+  },
+  {
+    "run_id": "beir3_sfr_gpu1",
+    "dataset": "nfcorpus",
+    "split": "test",
+    "metric": "ndcg@20",
+    "value": 0.35323073775916597,
+    "encoder_fp": "5343954c92"
+  },
+  {
+    "run_id": "beir3_sfr_gpu1",
+    "dataset": "nfcorpus",
+    "split": "test",
+    "metric": "mrr@20",
+    "value": 0.5950403047734566,
+    "encoder_fp": "5343954c92"
+  },
+  {
+    "run_id": "beir3_sfr_gpu1",
+    "dataset": "nfcorpus",
+    "split": "test",
+    "metric": "mrr",
+    "value": 0.5967502519816523,
+    "encoder_fp": "5343954c92"
+  },
+  {
+    "run_id": "beir3_sfr_gpu1",
+    "dataset": "fiqa-2018",
+    "split": "test",
+    "metric": "recall@1",
+    "value": 0.2459759804667212,
+    "encoder_fp": "5343954c92"
+  },
+  {
+    "run_id": "beir3_sfr_gpu1",
+    "dataset": "fiqa-2018",
+    "split": "test",
+    "metric": "precision@1",
+    "value": 0.4691358024691358,
+    "encoder_fp": "5343954c92"
+  },
+  {
+    "run_id": "beir3_sfr_gpu1",
+    "dataset": "fiqa-2018",
+    "split": "test",
+    "metric": "ndcg@1",
+    "value": 0.4691358024691358,
+    "encoder_fp": "5343954c92"
+  },
+  {
+    "run_id": "beir3_sfr_gpu1",
+    "dataset": "fiqa-2018",
+    "split": "test",
+    "metric": "mrr@1",
+    "value": 0.4691358024691358,
+    "encoder_fp": "5343954c92"
+  },
+  {
+    "run_id": "beir3_sfr_gpu1",
+    "dataset": "fiqa-2018",
+    "split": "test",
+    "metric": "recall@3",
+    "value": 0.40641404206219023,
+    "encoder_fp": "5343954c92"
+  },
+  {
+    "run_id": "beir3_sfr_gpu1",
+    "dataset": "fiqa-2018",
+    "split": "test",
+    "metric": "precision@3",
+    "value": 0.29732510288065844,
+    "encoder_fp": "5343954c92"
+  },
+  {
+    "run_id": "beir3_sfr_gpu1",
+    "dataset": "fiqa-2018",
+    "split": "test",
+    "metric": "ndcg@3",
+    "value": 0.44597394794201606,
+    "encoder_fp": "5343954c92"
+  },
+  {
+    "run_id": "beir3_sfr_gpu1",
+    "dataset": "fiqa-2018",
+    "split": "test",
+    "metric": "mrr@3",
+    "value": 0.5336934156378601,
+    "encoder_fp": "5343954c92"
+  },
+  {
+    "run_id": "beir3_sfr_gpu1",
+    "dataset": "fiqa-2018",
+    "split": "test",
+    "metric": "recall@5",
+    "value": 0.4767310964070223,
+    "encoder_fp": "5343954c92"
+  },
+  {
+    "run_id": "beir3_sfr_gpu1",
+    "dataset": "fiqa-2018",
+    "split": "test",
+    "metric": "precision@5",
+    "value": 0.22006172839506175,
+    "encoder_fp": "5343954c92"
+  },
+  {
+    "run_id": "beir3_sfr_gpu1",
+    "dataset": "fiqa-2018",
+    "split": "test",
+    "metric": "ndcg@5",
+    "value": 0.46126041285514363,
+    "encoder_fp": "5343954c92"
+  },
+  {
+    "run_id": "beir3_sfr_gpu1",
+    "dataset": "fiqa-2018",
+    "split": "test",
+    "metric": "mrr@5",
+    "value": 0.5481995884773663,
+    "encoder_fp": "5343954c92"
+  },
+  {
+    "run_id": "beir3_sfr_gpu1",
+    "dataset": "fiqa-2018",
+    "split": "test",
+    "metric": "recall@10",
+    "value": 0.5551348428663243,
+    "encoder_fp": "5343954c92"
+  },
+  {
+    "run_id": "beir3_sfr_gpu1",
+    "dataset": "fiqa-2018",
+    "split": "test",
+    "metric": "precision@10",
+    "value": 0.13317901234567903,
+    "encoder_fp": "5343954c92"
+  },
+  {
+    "run_id": "beir3_sfr_gpu1",
+    "dataset": "fiqa-2018",
+    "split": "test",
+    "metric": "ndcg@10",
+    "value": 0.48539890670999497,
+    "encoder_fp": "5343954c92"
+  },
+  {
+    "run_id": "beir3_sfr_gpu1",
+    "dataset": "fiqa-2018",
+    "split": "test",
+    "metric": "mrr@10",
+    "value": 0.5569634283754654,
+    "encoder_fp": "5343954c92"
+  },
+  {
+    "run_id": "beir3_sfr_gpu1",
+    "dataset": "fiqa-2018",
+    "split": "test",
+    "metric": "recall@20",
+    "value": 0.6288188449068078,
+    "encoder_fp": "5343954c92"
+  },
+  {
+    "run_id": "beir3_sfr_gpu1",
+    "dataset": "fiqa-2018",
+    "split": "test",
+    "metric": "precision@20",
+    "value": 0.07862654320987654,
+    "encoder_fp": "5343954c92"
+  },
+  {
+    "run_id": "beir3_sfr_gpu1",
+    "dataset": "fiqa-2018",
+    "split": "test",
+    "metric": "ndcg@20",
+    "value": 0.5110583232904369,
+    "encoder_fp": "5343954c92"
+  },
+  {
+    "run_id": "beir3_sfr_gpu1",
+    "dataset": "fiqa-2018",
+    "split": "test",
+    "metric": "mrr@20",
+    "value": 0.5604188384791599,
+    "encoder_fp": "5343954c92"
+  },
+  {
+    "run_id": "beir3_sfr_gpu1",
+    "dataset": "fiqa-2018",
+    "split": "test",
+    "metric": "mrr",
+    "value": 0.5638854622997084,
+    "encoder_fp": "5343954c92"
+  }
+]

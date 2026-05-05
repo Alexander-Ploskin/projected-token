@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import csv
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -35,6 +36,19 @@ def write_json(path: str | Path, data: Any) -> None:
 
 def load_json(path: str | Path) -> Any:
     return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def write_csv(path: str | Path, rows: Iterable[dict[str, Any]]) -> None:
+    rows = list(rows)
+    target = ensure_parent(path)
+    if not rows:
+        target.write_text("", encoding="utf-8")
+        return
+    fieldnames = sorted({key for row in rows for key in row.keys()})
+    with target.open("w", encoding="utf-8", newline="") as fp:
+        writer = csv.DictWriter(fp, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
 
 
 def load_parquet(path: str | Path) -> list[dict[str, Any]]:

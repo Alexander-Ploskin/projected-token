@@ -62,10 +62,10 @@ Top-level commands:
 - `run` - run generation followed by evaluation.
 - `run-all` - run all matching experiment configs.
 - `train` - train a projector from a YAML recipe.
+- `train-matrix` - run a matrix of training recipes.
 - `retrieval build-index` - build a FAISS index.
 - `retrieval evaluate` - compute retrieval metrics.
-- `retrieval index-kilt-sfr` - build a KILT FAISS index with SFR embeddings.
-- `retrieval index-kilt-bm25` - build a KILT BM25 index with `bm25s`.
+- `retrieval evaluate-beir` - evaluate checkpoints on BEIR-format datasets.
 - `data ...` - prepare datasets and teacher embeddings.
 
 ## Configs
@@ -167,27 +167,6 @@ python -m projected_token retrieval build-index \
   --config configs/retrieval/popqa_oscar_projector.yaml
 ```
 
-Build a KILT FAISS index with `Salesforce/SFR-Embedding-Mistral`:
-
-```bash
-python -m projected_token retrieval index-kilt-sfr \
-  --config configs/retrieval/kilt_sfr.yaml
-```
-
-Build a KILT BM25 index with `bm25s`:
-
-```bash
-python -m projected_token retrieval index-kilt-bm25 \
-  --config configs/retrieval/kilt_bm25.yaml
-```
-
-BM25 artifacts are written to `output_dir` and include:
-- `bm25s_index/` - serialized BM25 index.
-- `bm25s_doc_order.json` - row-to-`chunk_id` mapping in index order.
-- `chunks.jsonl` - chunk-level metadata and text.
-- `chunk_offsets.jsonl` - byte offsets for lazy chunk text reads.
-- `metadata.json` - run configuration and build stats.
-
 Evaluate retrieval:
 
 ```bash
@@ -195,7 +174,14 @@ python -m projected_token retrieval evaluate \
   --config configs/retrieval/popqa_oscar_projector.yaml
 ```
 
-Ranking metrics include `recall@k`, `precision@k`, `ndcg@k`, and `mrr`.
+Evaluate BEIR-3:
+
+```bash
+python -m projected_token retrieval evaluate-beir \
+  --config configs/retrieval/beir3_oscar_projector.yaml
+```
+
+Ranking metrics include `recall@k`, `precision@k`, `ndcg@k`, `mrr`, and capped `mrr@k` (including `mrr@10`).
 
 ## Training
 
@@ -209,7 +195,22 @@ python -m projected_token train --config configs/training/projector_flat.yaml
 python -m projected_token train --config configs/training/projector_distill.yaml
 ```
 
+Run experiment matrices:
+
+```bash
+python -m projected_token train-matrix --config configs/training/matrix_contrastive.yaml
+python -m projected_token train-matrix --config configs/training/matrix_distill.yaml
+python -m projected_token train-matrix --config configs/training/matrix_two_stage.yaml
+python -m projected_token train-matrix --config configs/training/matrix_lora_unfreeze.yaml
+```
+
 The unified `train` command dispatches to reusable trainers or internalized legacy recipes depending on the `recipe` field.
+Each training run is persisted under `artifacts/runs/<timestamp>_<name>/` with:
+- `config.lock.yaml`
+- `checkpoints/`
+- `logs/tensorboard/`
+- `metrics/*.json` + `metrics/*.csv`
+- `plots/*.png`
 
 ## Data Preparation
 

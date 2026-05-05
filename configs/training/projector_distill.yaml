@@ -1,5 +1,12 @@
 recipe: distill
-teacher_embeddings: artifacts/teacher_embeddings/teacher_embeddings_passage_100k.h5
+oscar_model: /data/huggingface/naver/oscar-qwen2-7B
+teacher_embeddings: /data/teacher-embeddings/teacher_embeddings_passage_100k.h5
+embed_dim: 768
+pooler: mean
+num_layers: 2
+dropout: 0.1
+projector_hidden_dim: 8192
+projector_type: mem
 batch_size: 512
 lr: 1.0e-4
 epochs: 30

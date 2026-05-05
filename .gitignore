@@ -222,3 +222,5 @@ artifacts/**
 !artifacts/manifest.json
 *_results.json
 *metrics.json
+!results/
+!results/**

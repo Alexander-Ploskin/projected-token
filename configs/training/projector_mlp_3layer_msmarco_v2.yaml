@@ -1,0 +1,21 @@
+recipe: mlp
+oscar_model_name: "/data/huggingface/naver/oscar-qwen2-7B"
+
+embed_dim: 768
+pooler: "flatten"
+num_layers: 3
+dropout: 0.1
+
+dataset_path: "/data/huggingface/sentence-transformers/msmarco-msmarco-distilbert-base-v3"
+dataset_config: "triplet"
+dataset_split: "train"
+
+batch_size: 48
+lr: 1e-4
+temperature: 0.05
+
+epochs: 3
+val_split: 0.02
+val_every_n_steps: 500
+
+device: "cuda:0"

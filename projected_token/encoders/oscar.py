@@ -34,6 +34,7 @@ class OscarEncoder(Encoder):
                 - "last": последний mem-токен
                 - "max": максимум по каждому измерению
                 - "mean_max": конкатенация mean и max
+                - "flatten": разворачивание всех mem-токенов
         """
         self._device = torch.device(device)
         self._aggregation = aggregation
@@ -51,6 +52,8 @@ class OscarEncoder(Encoder):
         
         if aggregation == "mean_max":
             self._latent_dim = dummy_output.shape[-1] * 2
+        elif aggregation == "flatten":
+            self._latent_dim = dummy_output.shape[1] * dummy_output.shape[-1]
         else:
             self._latent_dim = dummy_output.shape[-1]
     
@@ -61,7 +64,8 @@ class OscarEncoder(Encoder):
             tensor: Тензор формы [batch_size, num_tokens, hidden_dim]
             
         Returns:
-            Тензор формы [batch_size, hidden_dim] или [batch_size, hidden_dim*2] для mean_max
+            Тензор формы [batch_size, hidden_dim], [batch_size, hidden_dim*2] для mean_max
+            или [batch_size, num_mem_tokens*hidden_dim] для flatten
         """
         if self._aggregation == "mean":
             return tensor.mean(dim=1)
@@ -75,6 +79,8 @@ class OscarEncoder(Encoder):
             mean_emb = tensor.mean(dim=1)
             max_emb = tensor.max(dim=1).values
             return torch.cat([mean_emb, max_emb], dim=-1)
+        elif self._aggregation == "flatten":
+            return tensor.reshape(tensor.shape[0], -1)
         else:
             raise ValueError(f"Unknown aggregation: {self._aggregation}")
     

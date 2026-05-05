@@ -1,0 +1,23 @@
+encoder:
+  name: oscar_projector
+  kwargs:
+    oscar_model_name: naver/oscar-qwen2-7B
+    projector_path: artifacts/checkpoints/projector_mlp/best_model.pt
+    device: cuda:0
+index:
+  metric: ip
+  normalize: true
+  batch_size: 32
+split: test
+search_k: 100
+datasets:
+  - name: scifact
+    path: data/beir/scifact
+  - name: nfcorpus
+    path: data/beir/nfcorpus
+  - name: fiqa-2018
+    path: data/beir/fiqa
+metrics:
+  top_k: [1, 3, 5, 10, 20]
+  output_path: artifacts/results/retrieval/beir3_summary.json
+  output_csv_path: artifacts/results/retrieval/beir3_summary.csv
