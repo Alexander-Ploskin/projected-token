@@ -1,0 +1,41 @@
+dataset:
+  name: s-nlp/kilt
+  config: null
+  split: train
+  text_col: text
+  wikipedia_id_col: wikipedia_id
+  wikipedia_title_col: wikipedia_title
+
+encoder:
+  model_name_or_path: Salesforce/SFR-Embedding-Mistral
+  max_length: 4096
+  passage_prefix: ""
+
+index:
+  output_dir: /workspace/jovyan/artifacts/indexes/kilt_sfr_fp16
+  index_type: flat_fp16 
+  nlist: 16384
+  pq_m: 64
+  pq_bits: 8
+  train_size: 200000
+  add_batch_size: 16384
+  metric: ip
+  normalize: true
+  metadata_format: jsonl
+  metadata_fields: [wikipedia_id, wikipedia_title]
+
+runtime:
+  # Use up to two GPUs for shard encoding.
+  devices: cuda:0,cuda:1
+  batch_size: 8
+  streaming_shard_batches_per_file: 1000
+  attn_implementation: flash_attention_2
+  allow_attn_fallback: true
+  use_prepare_cache: true
+  refresh_prepare_cache: false
+  prepare_cache_path: null
+  use_encode_cache: false
+  refresh_encode_cache: false
+  encode_cache_dir: null
+  max_samples: null
+  hf_cache_dir: null

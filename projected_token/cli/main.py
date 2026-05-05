@@ -124,6 +124,20 @@ def retrieval_evaluate(config_path: str) -> None:
     evaluate_retrieval(config_path)
 
 
+@retrieval.command(context_settings={"ignore_unknown_options": True, "allow_extra_args": True}, name="index-kilt-sfr")
+@click.pass_context
+def retrieval_index_kilt_sfr(ctx: click.Context) -> None:
+    """Index s-nlp/kilt with Salesforce/SFR-Embedding-Mistral."""
+    _run_recipe_module("projected_token.retrieval.recipes.index_kilt_sfr", tuple(ctx.args))
+
+
+@retrieval.command(context_settings={"ignore_unknown_options": True, "allow_extra_args": True}, name="index-kilt-bm25")
+@click.pass_context
+def retrieval_index_kilt_bm25(ctx: click.Context) -> None:
+    """Index s-nlp/kilt with BM25 (bm25s)."""
+    _run_recipe_module("projected_token.retrieval.recipes.index_kilt_bm25", tuple(ctx.args))
+
+
 @cli.group()
 def data() -> None:
     """Prepare datasets and teacher embeddings."""

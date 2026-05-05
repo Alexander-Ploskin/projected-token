@@ -1,0 +1,30 @@
+dataset:
+  name: s-nlp/kilt
+  config: null
+  split: train
+  text_col: text
+  wikipedia_id_col: wikipedia_id
+  wikipedia_title_col: wikipedia_title
+  source_id_col: _id
+
+index:
+  output_dir: artifacts/indexes/kilt_bm25
+  chunk_size: 128
+  tokenizer_model: bert-base-uncased
+  tokenizer_revision: null
+
+bm25:
+  method: lucene
+  k1: 1.5
+  b: 0.75
+  delta: 0.5
+  stopwords: null
+  stemmer: null
+
+runtime:
+  max_chunks: null
+  max_samples: null
+  hf_cache_dir: null
+  hf_token: null
+  nfc_normalize: false
+  wikipedia_id_file: null

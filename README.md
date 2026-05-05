@@ -64,6 +64,8 @@ Top-level commands:
 - `train` - train a projector from a YAML recipe.
 - `retrieval build-index` - build a FAISS index.
 - `retrieval evaluate` - compute retrieval metrics.
+- `retrieval index-kilt-sfr` - build a KILT FAISS index with SFR embeddings.
+- `retrieval index-kilt-bm25` - build a KILT BM25 index with `bm25s`.
 - `data ...` - prepare datasets and teacher embeddings.
 
 ## Configs
@@ -164,6 +166,27 @@ Build a vector index:
 python -m projected_token retrieval build-index \
   --config configs/retrieval/popqa_oscar_projector.yaml
 ```
+
+Build a KILT FAISS index with `Salesforce/SFR-Embedding-Mistral`:
+
+```bash
+python -m projected_token retrieval index-kilt-sfr \
+  --config configs/retrieval/kilt_sfr.yaml
+```
+
+Build a KILT BM25 index with `bm25s`:
+
+```bash
+python -m projected_token retrieval index-kilt-bm25 \
+  --config configs/retrieval/kilt_bm25.yaml
+```
+
+BM25 artifacts are written to `output_dir` and include:
+- `bm25s_index/` - serialized BM25 index.
+- `bm25s_doc_order.json` - row-to-`chunk_id` mapping in index order.
+- `chunks.jsonl` - chunk-level metadata and text.
+- `chunk_offsets.jsonl` - byte offsets for lazy chunk text reads.
+- `metadata.json` - run configuration and build stats.
 
 Evaluate retrieval:
 
