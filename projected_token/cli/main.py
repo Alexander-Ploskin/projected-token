@@ -138,6 +138,13 @@ def retrieval_index_kilt_bm25(ctx: click.Context) -> None:
     _run_recipe_module("projected_token.retrieval.recipes.index_kilt_bm25", tuple(ctx.args))
 
 
+@retrieval.command(context_settings={"ignore_unknown_options": True, "allow_extra_args": True}, name="eval-kilt-sfr-openqa")
+@click.pass_context
+def retrieval_eval_kilt_sfr_openqa(ctx: click.Context) -> None:
+    """Evaluate KILT SFR index on PopQA/HotpotQA."""
+    _run_recipe_module("projected_token.retrieval.recipes.eval_kilt_sfr_openqa", tuple(ctx.args))
+
+
 @cli.group()
 def data() -> None:
     """Prepare datasets and teacher embeddings."""

@@ -1,0 +1,21 @@
+dataset: popqa
+index_dir: /workspace/jovyan/artifacts/indexes/kilt_sfr_fp16
+output_path: artifacts/results/retrieval/kilt_sfr_popqa_metrics.json
+
+dataset_cfg:
+  path: null
+  question_col: question
+  answer_col: possible_answers
+
+popqa_dataset_name: akariasai/PopQA
+popqa_split: test
+
+text_col: text
+device: cuda:0
+batch_size: 8
+max_length: 4096
+top_k: "1,5,10,20,50"
+instruction: "Given a web search query, retrieve relevant passages that answer the query"
+query_prefix_template: "Instruct: {instruction}\nQuery: {query}"
+
+save_details_path: artifacts/results/retrieval/kilt_sfr_popqa_details.json

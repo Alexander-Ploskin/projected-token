@@ -66,6 +66,7 @@ Top-level commands:
 - `retrieval evaluate` - compute retrieval metrics.
 - `retrieval index-kilt-sfr` - build a KILT FAISS index with SFR embeddings.
 - `retrieval index-kilt-bm25` - build a KILT BM25 index with `bm25s`.
+- `retrieval eval-kilt-sfr-openqa` - evaluate KILT SFR index on PopQA/HotpotQA.
 - `data ...` - prepare datasets and teacher embeddings.
 
 ## Configs
@@ -196,6 +197,13 @@ python -m projected_token retrieval evaluate \
 ```
 
 Ranking metrics include `recall@k`, `precision@k`, `ndcg@k`, and `mrr`.
+
+Evaluate the KILT SFR index (including sharded `flat_fp16` indexes) on open-QA datasets:
+
+```bash
+python -m projected_token retrieval eval-kilt-sfr-openqa \
+  --config configs/retrieval/eval_kilt_sfr_popqa.yaml
+```
 
 ## Training
 
