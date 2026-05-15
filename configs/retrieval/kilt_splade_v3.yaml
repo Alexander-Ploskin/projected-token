@@ -1,0 +1,24 @@
+dataset:
+  name: s-nlp/kilt
+  config: null
+  split: train
+  text_col: text
+
+model:
+  name: naver/splade-v3
+  max_length: 256
+
+splade:
+  aggregation: max
+  top_n_terms: 128
+
+runtime:
+  batch_size: 8
+  device: cuda:0
+  max_samples: null
+  hf_cache_dir: null
+  hf_token: null
+
+output:
+  dir: artifacts/indexes/kilt_splade_v3
+  prepare_cache_path: data/kilt/prepare/kilt_prepare.parquet

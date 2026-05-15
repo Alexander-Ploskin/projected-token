@@ -1,0 +1,17 @@
+dataset: popqa
+index_dir: artifacts/indexes/kilt_splade_v3
+output_path: artifacts/results/retrieval/kilt_splade_popqa_metrics.json
+
+retrieval_backend: splade_csr
+encoder_type: splade_v3
+model_name_or_path: naver/splade-v3
+disable_query_prefix: true
+splade_agg: max
+splade_top_n_terms: 128
+
+popqa_split: test
+text_col: text
+device: cuda:0
+batch_size: 8
+max_length: 256
+top_k: 1,5,10

@@ -138,11 +138,25 @@ def retrieval_index_kilt_bm25(ctx: click.Context) -> None:
     _run_recipe_module("projected_token.retrieval.recipes.index_kilt_bm25", tuple(ctx.args))
 
 
+@retrieval.command(context_settings={"ignore_unknown_options": True, "allow_extra_args": True}, name="index-kilt-splade")
+@click.pass_context
+def retrieval_index_kilt_splade(ctx: click.Context) -> None:
+    """Index s-nlp/kilt with SPLADE v3 CSR backend."""
+    _run_recipe_module("projected_token.retrieval.recipes.index_kilt_splade", tuple(ctx.args))
+
+
 @retrieval.command(context_settings={"ignore_unknown_options": True, "allow_extra_args": True}, name="eval-kilt-sfr-openqa")
 @click.pass_context
 def retrieval_eval_kilt_sfr_openqa(ctx: click.Context) -> None:
-    """Evaluate KILT SFR index on PopQA/HotpotQA."""
+    """Evaluate KILT OpenQA (legacy SFR-compatible command)."""
     _run_recipe_module("projected_token.retrieval.recipes.eval_kilt_sfr_openqa", tuple(ctx.args))
+
+
+@retrieval.command(context_settings={"ignore_unknown_options": True, "allow_extra_args": True}, name="eval-kilt-openqa")
+@click.pass_context
+def retrieval_eval_kilt_openqa(ctx: click.Context) -> None:
+    """Evaluate KILT OpenQA for dense/BM25/SPLADE backends."""
+    _run_recipe_module("projected_token.retrieval.recipes.eval_kilt_openqa", tuple(ctx.args))
 
 
 @cli.group()

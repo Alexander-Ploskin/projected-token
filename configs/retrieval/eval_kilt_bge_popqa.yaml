@@ -1,0 +1,18 @@
+dataset: popqa
+index_dir: artifacts/indexes/kilt_bge_flat
+output_path: artifacts/results/retrieval/kilt_bge_popqa_metrics.json
+
+retrieval_backend: dense_faiss
+encoder_type: bge
+model_name_or_path: BAAI/bge-large-en-v1.5
+disable_query_prefix: true
+pooling: cls
+
+popqa_split: test
+text_col: text
+device: cuda:0
+batch_size: 8
+max_length: 1024
+top_k: 1,5,10
+search_workers: 8
+search_query_batch_size: 128

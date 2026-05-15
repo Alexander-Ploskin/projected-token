@@ -1,209 +1,162 @@
 # Projected Token
 
-Clean research repository for context-compression experiments in LLM/RAG systems. The code is organized around one package, `projected_token`, and one public CLI. It includes generation, evaluation, retrieval, data preparation, and projector-training workflows for OSCAR, xRAG, PISCO/COCOM, RAG, and no-context baselines.
 
-## Repository Layout
+
+### Evaluate KILT with Multiple Retrievers
+
+Unified OpenQA evaluation now supports:
+
+- `dense_faiss` (SFR/BGE/other dense HF encoders),
+- `bm25` (bm25s index),
+- `splade_csr` (SPLADE v3 sparse CSR index).
+
+#### Compatibility Requirements
+
+Your index directory must include:
+
+- `metadata.json` with indexing metadata (or equivalent fields),
+- backend-specific artifacts:
+  - dense: `index.faiss` or `index_shards_manifest.json` + shard `.faiss`,
+  - bm25: `bm25s_index/`, `chunks.jsonl`, `bm25s_doc_order.json`,
+  - splade: `corpus_csr.npz`, `doc_row_ids.npy`,
+- for dense/splade: IDs aligned with KILT passage row IDs in the text cache parquet.
+
+If the method used a different query formatting or encoder, pass the matching options at eval time (model, prompt template, max length, normalization behavior).
+
+#### How a Precomputed KILT Dense Index Should Look
+
+A ready-to-evaluate index directory should look like one of these layouts.
+
+Single-file FAISS layout:
 
 ```text
-projected-token/
-├── projected_token/             # Python package and all public code
-│   ├── cli/                     # Unified Click CLI
-│   ├── models/                  # OSCAR, PISCO, xRAG, RAG, SimpleLLM
-│   ├── metrics/                 # GPT judge, QA judge, AlignScore, simple metrics
-│   ├── generation.py            # Generation pipeline
-│   ├── evaluation.py            # Evaluation pipeline
-│   ├── pipeline.py              # End-to-end runs
-│   ├── encoders/                # OSCAR/SFR/projector encoders
-│   ├── training/                # Training recipes and reusable trainers
-│   ├── retrieval/               # Indexing, retrieval tasks, ranking metrics
-│   ├── datasets/                # Dataset interfaces and PopQA loader
-│   └── data/                    # Data-preparation modules
-├── configs/
-│   ├── experiments/             # QA/paraphrase generation configs
-│   ├── training/                # Projector training recipes
-│   ├── retrieval/               # Index/eval configs
-│   ├── data/                    # Data preparation configs
-│   └── schemas/                 # Documented YAML schemas
-├── data/                        # Raw and prepared datasets
-├── artifacts/                   # Results, indexes, checkpoints, manifest
-├── docs/                        # Research notes copied from the original project
-├── Dockerfile
-└── pyproject.toml
+your_kilt_dense_index/
+├── metadata.json
+└── index.faiss
 ```
 
-The old root-level scripts from `last_projected-token` were internalized under domain modules. They are no longer public entrypoints; use `python -m projected_token ...` instead.
+Sharded FAISS layout:
 
-## Installation
+```text
+your_kilt_dense_index/
+├── metadata.json
+├── index_shards_manifest.json
+└── index_shards/
+    ├── s0_0_8000.faiss
+    ├── s0_8000_16000.faiss
+    └── ...
+```
+
+Expected manifest fields (`index_shards_manifest.json`):
+
+- `index_type` (for example `flat_fp16`)
+- `dim` (embedding dimension)
+- `num_shards`
+- `entries[]` with:
+  - `path` (absolute path to shard `.faiss`)
+  - `start`, `end` (global vector-id interval)
+  - `count` (usually `end - start`)
+  - `shard_id`
+
+Important consistency checks:
+
+- `metadata.json` should reference the same embedding family and index settings used at build time.
+- FAISS IDs must be row-aligned with the KILT text cache parquet used in evaluation.
+- If `metadata.json` contains `prepare_cache_path`, it should point to a valid parquet; otherwise pass `--text-cache-path` explicitly during eval.
+
+#### A) Index Already Exists (evaluate only)
+
+Example: evaluate PopQA for an existing dense BGE index:
 
 ```bash
-cd final/projected-token
-poetry install
-export PYTHONPATH=.
+python -m projected_token retrieval eval-kilt-openqa \
+  --dataset popqa \
+  --index-dir /path/to/your_kilt_dense_index \
+  --output-path artifacts/results/retrieval/bge_popqa_metrics.json \
+  --retrieval-backend dense_faiss \
+  --encoder-type bge \
+  --model-name-or-path BAAI/bge-large-en-v1.5 \
+  --disable-query-prefix \
+  --pooling cls \
+  --popqa-split test \
+  --text-cache-path /path/to/kilt_prepare.parquet \
+  --top-k 1,5,10 \
+  --search-workers 24 \
+  --search-query-batch-size 128
 ```
 
-Or run directly from the source tree:
+Example: evaluate BM25 index:
 
 ```bash
-python -m projected_token --help
+python -m projected_token retrieval eval-kilt-openqa \
+  --dataset popqa \
+  --index-dir artifacts/indexes/kilt_bm25 \
+  --output-path artifacts/results/retrieval/kilt_bm25_popqa_metrics.json \
+  --retrieval-backend bm25 \
+  --encoder-type bm25 \
+  --popqa-split test \
+  --top-k 1,5,10
 ```
 
-The project uses GPU-heavy dependencies (`torch`, `transformers`, `faiss`, `sentence-transformers`) and may download HuggingFace models at runtime.
-
-## CLI
+Example: evaluate SPLADE v3 CSR index:
 
 ```bash
-python -m projected_token --help
+python -m projected_token retrieval eval-kilt-openqa \
+  --dataset popqa \
+  --index-dir artifacts/indexes/kilt_splade_v3 \
+  --output-path artifacts/results/retrieval/kilt_splade_popqa_metrics.json \
+  --retrieval-backend splade_csr \
+  --encoder-type splade_v3 \
+  --model-name-or-path naver/splade-v3 \
+  --disable-query-prefix \
+  --popqa-split test \
+  --text-cache-path /path/to/kilt_prepare.parquet \
+  --splade-agg max \
+  --splade-top-n-terms 128 \
+  --top-k 1,5,10
 ```
 
-Top-level commands:
+#### B) Index Does Not Exist Yet (build then evaluate)
 
-- `generate` - generate paraphrases or QA answers.
-- `evaluate` - evaluate generated JSONL files.
-- `run` - run generation followed by evaluation.
-- `run-all` - run all matching experiment configs.
-- `train` - train a projector from a YAML recipe.
-- `retrieval build-index` - build a FAISS index.
-- `retrieval evaluate` - compute retrieval metrics.
-- `retrieval index-kilt-sfr` - build a KILT FAISS index with SFR embeddings.
-- `retrieval index-kilt-bm25` - build a KILT BM25 index with `bm25s`.
-- `retrieval eval-kilt-sfr-openqa` - evaluate KILT SFR index on PopQA/HotpotQA.
-- `data ...` - prepare datasets and teacher embeddings.
-
-## Configs
-
-Configs are split by workflow:
-
-- `configs/experiments/` for model generation and QA/paraphrase experiments.
-- `configs/training/` for projector recipes: `mlp`, `lora`, `full`, `flat`, `distill`, `hotpot_distill`.
-- `configs/retrieval/` for indexing and retrieval evaluation.
-- `configs/data/` for data preparation.
-- `configs/schemas/` documents the accepted YAML fields.
-
-Class paths use the new package namespace, for example:
-
-```yaml
-dataset:
-  class: projected_token.datasets.PopqaDataset
-
-model:
-  class: projected_token.models.OscarModel
-  kwargs:
-    model_name_or_path: naver/oscar-qwen2-7B
-    device: cuda:0
-    trust_remote_code: true
-```
-
-## Generation
-
-Paraphrase generation:
+1) Build a KILT index (examples):
 
 ```bash
-python -m projected_token generate \
-  --task paraphrase \
-  --config configs/experiments/oscar_7b_paraphrase.yaml \
-  --input data/eval/popqa/test.jsonl \
-  --output artifacts/results/paraphrase/oscar_7b.jsonl \
-  --text-col s_wiki_content \
-  --batch-size 4
-```
-
-QA generation:
-
-```bash
-python -m projected_token generate \
-  --task qa \
-  --config configs/experiments/oscar_7b_qa.yaml \
-  --input data/eval/popqa/test.jsonl \
-  --output artifacts/results/qa/oscar_7b.jsonl \
-  --text-col s_wiki_content \
-  --question-col question \
-  --batch-size 4
-```
-
-## Evaluation
-
-Paraphrase evaluation with simple metrics and optional GPT judge:
-
-```bash
-python -m projected_token evaluate \
-  --task paraphrase \
-  --input artifacts/results/paraphrase/oscar_7b.jsonl \
-  --output artifacts/results/paraphrase/oscar_7b_metrics.json \
-  --config configs/experiments/oscar_7b_paraphrase.yaml \
-  --base-url http://localhost:8000/v1 \
-  --api-key dummy \
-  --model Qwen/Qwen3.5-27B
-```
-
-QA evaluation:
-
-```bash
-python -m projected_token evaluate \
-  --task qa \
-  --input artifacts/results/qa/oscar_7b.jsonl \
-  --output artifacts/results/qa/oscar_7b_metrics.json \
-  --config configs/experiments/oscar_7b_qa.yaml \
-  --base-url http://localhost:8000/v1 \
-  --api-key dummy \
-  --model Qwen/Qwen3.5-27B
-```
-
-End-to-end run:
-
-```bash
-python -m projected_token run \
-  --task qa \
-  --config configs/experiments/oscar_7b_qa.yaml \
-  --input data/eval/popqa/test.parquet \
-  --output-dir artifacts/results/qa/oscar_7b \
-  --batch-size 4
-```
-
-## Retrieval
-
-Build a vector index:
-
-```bash
-python -m projected_token retrieval build-index \
-  --config configs/retrieval/popqa_oscar_projector.yaml
-```
-
-Build a KILT FAISS index with `Salesforce/SFR-Embedding-Mistral`:
-
-```bash
+# Dense (SFR template)
 python -m projected_token retrieval index-kilt-sfr \
   --config configs/retrieval/kilt_sfr.yaml
-```
 
-Build a KILT BM25 index with `bm25s`:
-
-```bash
+# BM25
 python -m projected_token retrieval index-kilt-bm25 \
   --config configs/retrieval/kilt_bm25.yaml
+
+# SPLADE v3 (CSR)
+python -m projected_token retrieval index-kilt-splade \
+  --config configs/retrieval/kilt_splade_v3.yaml
 ```
 
-BM25 artifacts are written to `output_dir` and include:
-- `bm25s_index/` - serialized BM25 index.
-- `bm25s_doc_order.json` - row-to-`chunk_id` mapping in index order.
-- `chunks.jsonl` - chunk-level metadata and text.
-- `chunk_offsets.jsonl` - byte offsets for lazy chunk text reads.
-- `metadata.json` - run configuration and build stats.
-
-Evaluate retrieval:
+2) Evaluate on a target dataset:
 
 ```bash
-python -m projected_token retrieval evaluate \
-  --config configs/retrieval/popqa_oscar_projector.yaml
+python -m projected_token retrieval eval-kilt-openqa \
+  --config configs/retrieval/eval_kilt_sfr_hotpot_distractor.yaml
 ```
 
-Ranking metrics include `recall@k`, `precision@k`, `ndcg@k`, and `mrr`.
+Legacy command `eval-kilt-sfr-openqa` is still available and forwards to the unified evaluator.
 
-Evaluate the KILT SFR index (including sharded `flat_fp16` indexes) on open-QA datasets:
+#### Fast Re-scoring Without Re-running Search
+
+If you already have saved top-k retrieval results (`*_topk.jsonl`), recompute metrics only:
 
 ```bash
-python -m projected_token retrieval eval-kilt-sfr-openqa \
-  --config configs/retrieval/eval_kilt_sfr_popqa.yaml
+python -m projected_token retrieval eval-kilt-openqa \
+  --config configs/retrieval/eval_kilt_sfr_popqa.yaml \
+  --search-results-jsonl-path artifacts/results/retrieval/kilt_sfr_popqa_metrics_topk.jsonl \
+  --no-use-search-cache \
+  --no-save-search-cache \
+  --no-save-search-results-jsonl
 ```
+
+This mode skips dense search and only re-runs relevance judging + metric aggregation.
 
 ## Training
 

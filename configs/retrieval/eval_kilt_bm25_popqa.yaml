@@ -1,0 +1,13 @@
+dataset: popqa
+index_dir: artifacts/indexes/kilt_bm25
+output_path: artifacts/results/retrieval/kilt_bm25_popqa_metrics.json
+
+retrieval_backend: bm25
+encoder_type: bm25
+
+popqa_split: test
+text_col: text
+device: cpu
+batch_size: 1
+max_length: 256
+top_k: 1,5,10
