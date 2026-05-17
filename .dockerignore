@@ -1,0 +1,17 @@
+.git
+.gitignore
+.cursor
+.tmux-tmp
+
+.hf_home
+.hf_cache
+data
+artifacts
+results
+
+venv
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd

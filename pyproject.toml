@@ -40,13 +40,6 @@ pyyaml = "^6.0.2"
 [tool.poetry.scripts]
 projected-token = "projected_token.cli.main:cli"
 
-
-[[tool.poetry.source]]
-name = "artifactory-internal"
-url = "https://artifactory.s.o3.ru/artifactory/api/pypi/pypi-virtual/simple"
-priority = "primary"
-
-
 [tool.poetry.extras]
 alignscore = ["spacy"]
 

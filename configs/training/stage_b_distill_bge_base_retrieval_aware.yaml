@@ -1,0 +1,28 @@
+recipe: distill
+run_id: stage-b-distill-bge-base-ra
+oscar_model: naver/oscar-qwen2-7B
+teacher_embeddings:
+  - data/teacher-embeddings/bge-base-en-v1.5_teacher_embeddings_mixed.h5
+embed_dim: 768
+pooler: mean
+dropout: 0.0
+projector_hidden_dim: 8192
+projector_type: mem
+num_layers: 2
+batch_size: 256
+lr: 1.0e-4
+infonce_weight: 1.0
+margin_mse_weight: 0.0
+mse_weight: 0.1
+temperature: 0.02
+margin: 0.1
+hard_negative_weight: 0.0
+hard_negative_margin: 0.05
+selection_metric: proxy_ndcg@10
+proxy_eval_every_n_steps: 500
+proxy_eval_config: configs/retrieval/beir3_proxy_stage_b.yaml
+beir_probe_config: configs/retrieval/beir3_proxy_stage_b.yaml
+beir_probe_samples: 20
+epochs: 30
+val_split: 0.05
+device: cuda:0

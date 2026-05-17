@@ -266,7 +266,8 @@ docker build -t projected-token .
 docker run --gpus all --rm -it \
   -v "$(pwd)/data:/workspace/data" \
   -v "$(pwd)/artifacts:/workspace/artifacts" \
-  -v "$HOME/.cache/huggingface:/workspace/data/hf_cache" \
+  -v "/mnt/raid/a-ploskin/projected-token-hf-home:/workspace/data/hf_cache" \
+  -e HF_HOME=/workspace/data/hf_cache \
   projected-token --help
 ```
 

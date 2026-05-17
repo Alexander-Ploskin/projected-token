@@ -1,5 +1,5 @@
 recipe: distill
-run_id: stage-b-distill-e5-base
+run_id: stage-b-distill-e5-base-hn
 oscar_model: naver/oscar-qwen2-7B
 teacher_embeddings:
   - data/teacher-embeddings/e5-base-v2_teacher_embeddings_mixed.h5
@@ -11,6 +11,16 @@ projector_type: mem
 num_layers: 2
 batch_size: 256
 lr: 1.0e-4
+infonce_weight: 1.0
+margin_mse_weight: 0.1
+mse_weight: 0.1
+temperature: 0.02
+margin: 0.1
+hard_negative_weight: 0.2
+hard_negative_margin: 0.05
+selection_metric: proxy_ndcg@10
+proxy_eval_every_n_steps: 0
+proxy_eval_config:
 epochs: 30
 val_split: 0.05
 device: cuda:0

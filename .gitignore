@@ -226,3 +226,4 @@ artifacts/**
 !results/**
 
 data
+.hf_home

@@ -57,6 +57,7 @@ def generate_teacher_embeddings(
     output_name: str = "teacher_embeddings_100k.h5",
     dataset_name: str = None,
     corpus_path: str = None,
+    mixed_dataset_path: str = None,
     device: str = "cuda:0",
     teacher_model_name: str = "/data/huggingface/Salesforce/SFR-Embedding-Mistral",
     pooling: str = "auto",
@@ -70,8 +71,21 @@ def generate_teacher_embeddings(
     # Prompt template used by SFR-Embedding-Mistral
     doc_task_def = "Given a web search query, retrieve relevant passages that answer the query"
     
-    # Load texts from local corpus or HuggingFace
-    if corpus_path:
+    # Load texts from local corpus, mixed dataset or HuggingFace
+    sample_ids: list[str] | None = None
+    sources: list[str] | None = None
+    if mixed_dataset_path:
+        print(f"Loading mixed dataset: {mixed_dataset_path}")
+        with open(mixed_dataset_path, "r", encoding="utf-8") as f:
+            mixed = json.load(f)
+        if num_samples:
+            mixed = mixed[:num_samples]
+        texts = [str(item.get("positive_doc", item.get("positive", ""))) for item in mixed]
+        sample_ids = [str(item.get("sample_id", f"mixed:{i}")) for i, item in enumerate(mixed)]
+        sources = [str(item.get("source", "mixed")) for item in mixed]
+        num_samples = len(texts)
+        print(f"Loaded mixed samples: {num_samples}")
+    elif corpus_path:
         print(f"Loading corpus from local file: {corpus_path}")
         texts = load_local_corpus(corpus_path, max_samples=num_samples)
         num_samples = len(texts)
@@ -90,12 +104,17 @@ def generate_teacher_embeddings(
         torch_dtype=torch.bfloat16
     ).to(device).eval()
     print("Teacher model loaded")
+    model_max_len = int(getattr(model.config, "max_position_embeddings", 4096) or 4096)
+    max_len = min(4096, model_max_len)
+    print(f"Using max_length={max_len} (model max_position_embeddings={model_max_len})")
     
     print(f"Generating embeddings for {num_samples} samples...")
     
     with h5py.File(output_path, 'w') as f:
         emb_dataset = None
         text_dataset = f.create_dataset('texts', shape=(num_samples,), dtype=h5py.string_dtype(encoding='utf-8'))
+        id_dataset = None
+        source_dataset = None
 
         lower_name = teacher_model_name.lower()
         for i in tqdm(range(0, num_samples, batch_size)):
@@ -117,7 +136,7 @@ def generate_teacher_embeddings(
 
             inputs = tokenizer(
                 batch_inputs,
-                max_length=4096,
+                max_length=max_len,
                 padding=True,
                 truncation=True,
                 return_tensors="pt"
@@ -146,6 +165,14 @@ def generate_teacher_embeddings(
 
             emb_dataset[i:i+batch_size] = embeddings.cpu().float().numpy()
             text_dataset[i:i+batch_size] = batch_texts
+            if sample_ids is not None:
+                if id_dataset is None:
+                    id_dataset = f.create_dataset("sample_ids", shape=(num_samples,), dtype=h5py.string_dtype(encoding="utf-8"))
+                id_dataset[i:i+batch_size] = sample_ids[i:i+batch_size]
+            if sources is not None:
+                if source_dataset is None:
+                    source_dataset = f.create_dataset("sources", shape=(num_samples,), dtype=h5py.string_dtype(encoding="utf-8"))
+                source_dataset[i:i+batch_size] = sources[i:i+batch_size]
     
     with h5py.File(output_path, 'r') as f:
         emb_shape = f["embeddings"].shape
@@ -165,6 +192,8 @@ def main():
                         help="HuggingFace dataset name (e.g., Tevatron/msmarco-doc-corpus)")
     parser.add_argument("--corpus-path", type=str, default=None,
                         help="Local corpus path (e.g., /data/huggingface/Tevatron/msmarco-passage-corpus/corpus.jsonl.gz)")
+    parser.add_argument("--mixed-dataset-path", type=str, default=None,
+                        help="Path to mixed dataset JSON with positive_doc/query/source/sample_id")
     parser.add_argument("--teacher-model-name", type=str, default="/data/huggingface/Salesforce/SFR-Embedding-Mistral")
     parser.add_argument("--pooling", type=str, default="auto", choices=["auto", "last_token", "mean", "cls"])
     parser.add_argument("--prompt-style", type=str, default="auto", choices=["auto", "none", "sfr", "e5"])
@@ -172,7 +201,9 @@ def main():
     
     args = parser.parse_args()
     
-    if args.corpus_path:
+    if args.mixed_dataset_path:
+        print(f"Using mixed dataset: {args.mixed_dataset_path}")
+    elif args.corpus_path:
         print(f"Using local corpus: {args.corpus_path}")
     elif args.dataset_name:
         print(f"Using HuggingFace dataset: {args.dataset_name}")
@@ -187,6 +218,7 @@ def main():
         output_name=args.output_name,
         dataset_name=args.dataset_name,
         corpus_path=args.corpus_path,
+        mixed_dataset_path=args.mixed_dataset_path,
         teacher_model_name=args.teacher_model_name,
         pooling=args.pooling,
         prompt_style=args.prompt_style,
