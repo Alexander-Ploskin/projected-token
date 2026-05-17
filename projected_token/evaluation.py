@@ -8,7 +8,7 @@ from tqdm import tqdm
 
 from projected_token.config import instantiate, load_yaml
 from projected_token.io import load_jsonl, write_json, write_jsonl
-from projected_token.metrics import GPTScoreMetric, QAScoreMetric, compute_in_accuracy
+from projected_token.metrics import score_prediction
 from projected_token.metrics.simple import aggregate_simple_metrics
 from projected_token.logging_utils import log_step
 
@@ -39,15 +39,24 @@ def evaluate_paraphrase(
 
     metrics = []
     if judge_config:
+        from projected_token.metrics import GPTScoreMetric
+
         metrics.append(GPTScoreMetric(judge_config))
     for cfg in metric_configs or []:
         metrics.append(instantiate(cfg, kind="metric"))
 
     if metrics:
+        gpt_score_cls = None
+        try:
+            from projected_token.metrics import GPTScoreMetric
+
+            gpt_score_cls = GPTScoreMetric
+        except Exception:
+            gpt_score_cls = None
         log_step(f"Evaluating paraphrases with {len(metrics)} metric(s)")
         for metric in metrics:
             metric_name = metric.__class__.__name__
-            if isinstance(metric, GPTScoreMetric) and batch_size > 1:
+            if gpt_score_cls is not None and isinstance(metric, gpt_score_cls) and batch_size > 1:
                 for start in tqdm(range(0, len(rows), batch_size), desc=metric_name):
                     verdicts = metric.judge_batch(candidates[start:start + batch_size], originals[start:start + batch_size])
                     for row, verdict in zip(rows[start:start + batch_size], verdicts):
@@ -74,10 +83,19 @@ def evaluate_qa(
     questions = [str(row.get(question_col, "")) for row in rows]
     references = [_reference_answers(row, answer_col) for row in rows]
     predictions = [str(row.get(prediction_col, "")) for row in rows]
-    in_acc = [compute_in_accuracy(pred, refs) for pred, refs in zip(predictions, references)]
-    summary: dict[str, Any] = {"count": len(rows), "in_accuracy": float(mean(in_acc)) if in_acc else 0.0}
+    scores = [score_prediction(pred, refs) for pred, refs in zip(predictions, references)]
+    summary: dict[str, Any] = {
+        "count": len(rows),
+        "mean_em": float(mean(score["em"] for score in scores)) if scores else 0.0,
+        "mean_f1": float(mean(score["f1"] for score in scores)) if scores else 0.0,
+        "mean_answer_in_prediction": float(mean(score["answer_in_prediction"] for score in scores)) if scores else 0.0,
+        "mean_in_accuracy": float(mean(score["in_accuracy"] for score in scores)) if scores else 0.0,
+    }
+    summary["in_accuracy"] = summary["mean_in_accuracy"]
 
     if judge_config:
+        from projected_token.metrics import QAScoreMetric
+
         judge = QAScoreMetric(judge_config)
         verdicts: list[dict[str, Any]] = []
         log_step("Evaluating QA answers with LLM judge")

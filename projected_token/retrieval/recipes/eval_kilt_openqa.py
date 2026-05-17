@@ -792,6 +792,16 @@ def _build_queries_signature(cases: list[QueryCase]) -> str:
     return digest.hexdigest()
 
 
+def _is_cached_topk_compatible(cases: list[QueryCase], loaded_rows: list[dict[str, Any]]) -> bool:
+    if len(loaded_rows) != len(cases):
+        return False
+    for idx, row in enumerate(loaded_rows):
+        row_query = str(row.get("query", "") or "").strip()
+        if row_query != cases[idx].query:
+            return False
+    return True
+
+
 def _default_search_cache_path(output_path: str) -> Path:
     output = Path(output_path)
     stem = output.stem if output.stem else "kilt_openqa_metrics"
@@ -935,6 +945,11 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
 
     if not cases:
         raise ValueError("No valid query cases loaded.")
+    if args.dataset.startswith("hotpotqa") and not any(case.answers for case in cases):
+        raise ValueError(
+            "No gold answers found for HotpotQA split. "
+            "Use --hotpot-split validation for metric computation (test split has no labels)."
+        )
     if args.sample_ratio is not None:
         if not (0 < float(args.sample_ratio) <= 1.0):
             raise ValueError("--sample-ratio must be in (0, 1].")
@@ -956,7 +971,7 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
 
     if bool(args.use_search_results_jsonl) and search_results_jsonl_path.exists():
         loaded_rows = load_jsonl(search_results_jsonl_path)
-        if len(loaded_rows) == len(cases):
+        if _is_cached_topk_compatible(cases, loaded_rows):
             patched_rows: list[dict[str, Any]] = []
             for row_idx, row in enumerate(loaded_rows):
                 target_terms = list(cases[row_idx].answers)
@@ -966,6 +981,11 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
                 patched_rows.append(patched)
             topk_rows = patched_rows
             print(f"Loaded top-k search results: {search_results_jsonl_path}")
+        else:
+            print(
+                "Cached top-k jsonl is incompatible with current queries "
+                f"(path={search_results_jsonl_path}); rebuilding retrieval."
+            )
 
     if topk_rows is None:
         queries_signature = _build_queries_signature(cases)

@@ -7,16 +7,10 @@ from typing import Any
 
 import click
 
-from projected_token.config import load_yaml
-from projected_token.evaluation import evaluate_paraphrase, evaluate_qa
-from projected_token.generation import run_generation
-from projected_token.pipeline import run_all as run_all_experiments
-from projected_token.pipeline import run_experiment
-from projected_token.retrieval.pipeline import build_index, evaluate_retrieval
-from projected_token.training.recipe_runner import run_training
-
 
 def _judge_config(base_url: str | None, api_key: str | None, model: str | None, config: str | None = None) -> dict[str, Any] | None:
+    from projected_token.config import load_yaml
+
     data = load_yaml(config).get("evaluation", {}) if config else {}
     resolved = {
         "base_url": base_url or data.get("base_url") or data.get("llm_base_url"),
@@ -43,6 +37,8 @@ def cli() -> None:
 @click.option("--batch-size", type=int, default=None)
 def generate(task: str, config_path: str, input_path: str, output_path: str, text_col: str, question_col: str, output_col: str | None, batch_size: int | None) -> None:
     """Generate paraphrases or QA answers."""
+    from projected_token.generation import run_generation
+
     run_generation(config_path=config_path, input_path=input_path, output_path=output_path, task=task, text_col=text_col, question_col=question_col, output_col=output_col, batch_size=batch_size)
 
 
@@ -62,6 +58,9 @@ def generate(task: str, config_path: str, input_path: str, output_path: str, tex
 @click.option("--batch-size", default=10)
 def evaluate(task: str, input_path: str, output_path: str, config_path: str | None, base_url: str | None, api_key: str | None, model: str | None, original_col: str, candidate_col: str, question_col: str, answer_col: str, prediction_col: str, batch_size: int) -> None:
     """Evaluate generated outputs."""
+    from projected_token.config import load_yaml
+    from projected_token.evaluation import evaluate_paraphrase, evaluate_qa
+
     judge = _judge_config(base_url, api_key, model, config_path)
     if task == "qa":
         evaluate_qa(input_path=input_path, output_path=output_path, judge_config=judge, question_col=question_col, answer_col=answer_col, prediction_col=prediction_col, batch_size=batch_size)
@@ -84,6 +83,8 @@ def evaluate(task: str, input_path: str, output_path: str, config_path: str | No
 @click.option("--judge-model", default=None)
 def run_cmd(task: str, config_path: str, input_path: str, output_dir: str, text_col: str, question_col: str, answer_col: str, batch_size: int | None, judge_base_url: str | None, judge_api_key: str | None, judge_model: str | None) -> None:
     """Run generation followed by evaluation."""
+    from projected_token.pipeline import run_experiment
+
     run_experiment(task=task, config_path=config_path, input_path=input_path, output_dir=output_dir, text_col=text_col, question_col=question_col, answer_col=answer_col, batch_size=batch_size, judge_base_url=judge_base_url, judge_api_key=judge_api_key, judge_model=judge_model)
 
 
@@ -96,6 +97,8 @@ def run_cmd(task: str, config_path: str, input_path: str, output_dir: str, text_
 @click.option("--batch-size", type=int, default=None)
 def run_all_cmd(task: str, configs_dir: str, input_path: str, output_dir: str, config_filter: str | None, batch_size: int | None) -> None:
     """Run all matching experiment configs."""
+    from projected_token.pipeline import run_all as run_all_experiments
+
     run_all_experiments(task=task, configs_dir=configs_dir, input_path=input_path, output_dir=output_dir, config_filter=config_filter, batch_size=batch_size)
 
 
@@ -104,6 +107,8 @@ def run_all_cmd(task: str, configs_dir: str, input_path: str, output_dir: str, c
 @click.option("--epochs", type=int, default=None)
 def train(config_path: str, epochs: int | None) -> None:
     """Train a projector using a YAML recipe."""
+    from projected_token.training.recipe_runner import run_training
+
     run_training(config_path, epochs=epochs)
 
 
@@ -115,12 +120,16 @@ def retrieval() -> None:
 @retrieval.command(name="build-index")
 @click.option("--config", "config_path", required=True, type=click.Path(exists=True))
 def retrieval_build_index(config_path: str) -> None:
+    from projected_token.retrieval.pipeline import build_index
+
     build_index(config_path)
 
 
 @retrieval.command(name="evaluate")
 @click.option("--config", "config_path", required=True, type=click.Path(exists=True))
 def retrieval_evaluate(config_path: str) -> None:
+    from projected_token.retrieval.pipeline import evaluate_retrieval
+
     evaluate_retrieval(config_path)
 
 
@@ -157,6 +166,65 @@ def retrieval_eval_kilt_sfr_openqa(ctx: click.Context) -> None:
 def retrieval_eval_kilt_openqa(ctx: click.Context) -> None:
     """Evaluate KILT OpenQA for dense/BM25/SPLADE backends."""
     _run_recipe_module("projected_token.retrieval.recipes.eval_kilt_openqa", tuple(ctx.args))
+
+
+@retrieval.command(context_settings={"ignore_unknown_options": True, "allow_extra_args": True}, name="precompute-bm25-topk")
+@click.pass_context
+def retrieval_precompute_bm25_topk(ctx: click.Context) -> None:
+    """Precompute BM25 top-k docs for OpenQA questions."""
+    _run_recipe_module("projected_token.retrieval.recipes.precompute_bm25_topk", tuple(ctx.args))
+
+
+@cli.group()
+def qa() -> None:
+    """Generate and evaluate QA predictions."""
+
+
+@qa.command(name="score-jsonl")
+@click.option("--pred", "pred_path", required=True, type=click.Path(exists=True))
+@click.option("--out", "output_path", required=True, type=click.Path())
+@click.option("--gold-jsonl", default=None, type=click.Path(exists=True))
+@click.option("--gold-hf", default=None, type=click.Choice(["popqa", "hotpotqa", "hotpotqa_distractor", "hotpotqa_fullwiki"]))
+@click.option("--hf-split", default=None)
+@click.option("--hf-cache-dir", default=None, type=click.Path())
+@click.option("--hf-token", default=None)
+@click.option("--max-rows", type=int, default=None)
+@click.option("--write-errors", default=None, type=click.Path())
+def qa_score_jsonl(
+    pred_path: str,
+    output_path: str,
+    gold_jsonl: str | None,
+    gold_hf: str | None,
+    hf_split: str | None,
+    hf_cache_dir: str | None,
+    hf_token: str | None,
+    max_rows: int | None,
+    write_errors: str | None,
+) -> None:
+    """Score QA prediction JSONL with OSCAR-style text metrics."""
+    from projected_token.qa.eval import evaluate_predictions_jsonl
+
+    payload = evaluate_predictions_jsonl(
+        pred_path=pred_path,
+        output_path=output_path,
+        gold_jsonl=gold_jsonl,
+        gold_hf=gold_hf,
+        hf_split=hf_split,
+        hf_cache_dir=hf_cache_dir,
+        hf_token=hf_token,
+        max_rows=max_rows,
+        write_errors_path=write_errors,
+    )
+    click.echo(f"Wrote QA metrics to {output_path}")
+    for key in ("mean_em", "mean_f1", "mean_answer_in_prediction", "mean_in_accuracy"):
+        click.echo(f"{key}: {float(payload[key]):.6f}")
+
+
+@qa.command(context_settings={"ignore_unknown_options": True, "allow_extra_args": True}, name="e2e-from-topk")
+@click.pass_context
+def qa_e2e_from_topk(ctx: click.Context) -> None:
+    """Generate and score QA predictions from saved retrieval top-k JSONL."""
+    _run_recipe_module("projected_token.qa.recipes.e2e_from_topk", tuple(ctx.args))
 
 
 @cli.group()

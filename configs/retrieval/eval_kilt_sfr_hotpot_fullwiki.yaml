@@ -2,7 +2,7 @@ dataset: hotpotqa_fullwiki
 index_dir: /workspace/jovyan/artifacts/indexes/kilt_sfr_fp16
 output_path: artifacts/results/retrieval/kilt_sfr_hotpot_fullwiki_metrics.json
 
-hotpot_split: test
+hotpot_split: validation
 text_col: text
 device: cuda:0
 batch_size: 8
