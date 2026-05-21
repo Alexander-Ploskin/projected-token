@@ -8,6 +8,7 @@ import glob
 import json
 import math
 import os
+import re
 from pathlib import Path
 from typing import Any, Sequence, Union
 
@@ -130,6 +131,7 @@ class QueryDistillationTrainer:
         beir_probe_samples_per_dataset: int | None = None,
         beir_probe_negatives: int = 20,
         beir_probe_batch_size: int = 8,
+        selection_metric: str = "beir_proxy_ndcg@10",
         device: str = "cuda:0",
         output_dir: str = "checkpoints/query_distill",
         log_dir: str = "logs/query_distill",
@@ -158,6 +160,7 @@ class QueryDistillationTrainer:
         )
         self.beir_probe_negatives = int(beir_probe_negatives)
         self.beir_probe_batch_size = int(beir_probe_batch_size)
+        self.selection_metric = str(selection_metric)
         self.output_dir = Path(output_dir)
         self.log_dir = Path(log_dir)
         self.run_root = self.output_dir.parent if self.output_dir.name == "checkpoints" else self.output_dir
@@ -225,6 +228,7 @@ class QueryDistillationTrainer:
             "num_layers": num_layers,
             "dropout": dropout,
             "gradient_accumulation_steps": self.gradient_accumulation_steps,
+            "selection_metric": self.selection_metric,
             "projector_type": "mem",
             "training_objective": "query_doc_bge_distill",
         }
@@ -373,6 +377,8 @@ class QueryDistillationTrainer:
                     "gap_max",
                     "ranking_active_frac",
                     "beir_probe_mrr@10",
+                    "beir_probe_ndcg@10",
+                    "beir_proxy_ndcg@10",
                     "beir_probe_recall@10",
                 )
                 if key in out
@@ -526,23 +532,40 @@ class QueryDistillationTrainer:
             similarities = torch.matmul(q_emb, cand_emb.T).cpu().numpy()
         mrr_at_10 = 0.0
         recall_at_10 = 0.0
+        ndcg_at_10 = 0.0
+        proxy_mrr_at_10 = 0.0
+        proxy_recall_at_10 = 0.0
+        proxy_ndcg_at_10 = 0.0
         ranks: list[int] = []
+        proxy_ranks: list[int] = []
         reciprocal_ranks: list[float] = []
+        discounted_gains: list[float] = []
         for i, (start, stop) in enumerate(offsets):
             local_scores = similarities[i, start:stop]
             rank = int(np.where(np.argsort(-local_scores) == 0)[0][0]) + 1
+            proxy_rank = int(np.where(np.argsort(-similarities[i]) == start)[0][0]) + 1
             ranks.append(rank)
+            proxy_ranks.append(proxy_rank)
             reciprocal_ranks.append(1.0 / rank)
+            discounted_gain = 1.0 / float(np.log2(rank + 1.0)) if rank <= 10 else 0.0
+            discounted_gains.append(discounted_gain)
             if rank <= 10:
                 mrr_at_10 += 1.0 / rank
                 recall_at_10 += 1.0
+                ndcg_at_10 += discounted_gain
+            if proxy_rank <= 10:
+                proxy_mrr_at_10 += 1.0 / proxy_rank
+                proxy_recall_at_10 += 1.0
+                proxy_ndcg_at_10 += 1.0 / float(np.log2(proxy_rank + 1.0))
         denom = max(1, len(offsets))
         pos_mean = float(np.mean(pos_cos))
         neg_mean = float(np.mean(neg_cos))
         gaps = pos_cos - neg_cos
         gap_mean = float(np.mean(gaps))
         rank_arr = np.asarray(ranks, dtype=np.float32)
+        proxy_rank_arr = np.asarray(proxy_ranks, dtype=np.float32)
         rr_arr = np.asarray(reciprocal_ranks, dtype=np.float32)
+        ndcg_arr = np.asarray(discounted_gains, dtype=np.float32)
         datasets = [str(case.get("dataset", "beir")) for case in self._beir_probe_cases]
         dataset_summaries: dict[str, dict[str, float]] = {}
         for dataset_name in sorted(set(datasets)):
@@ -550,8 +573,11 @@ class QueryDistillationTrainer:
             if indices.size == 0:
                 continue
             ds_ranks = rank_arr[indices]
+            ds_proxy_ranks = proxy_rank_arr[indices]
             ds_rr = rr_arr[indices]
+            ds_ndcg = ndcg_arr[indices]
             ds_recall_at_10 = float(np.mean(ds_ranks <= 10))
+            ds_proxy_recall_at_10 = float(np.mean(ds_proxy_ranks <= 10))
             dataset_summaries[dataset_name] = {
                 "cases": float(indices.size),
                 "pos_cosine_mean": float(np.mean(pos_cos[indices])),
@@ -560,9 +586,16 @@ class QueryDistillationTrainer:
                 "gap_std": float(np.std(gaps[indices])),
                 "rank_mean": float(np.mean(ds_ranks)),
                 "rank_median": float(np.median(ds_ranks)),
+                "proxy_rank_mean": float(np.mean(ds_proxy_ranks)),
+                "proxy_rank_median": float(np.median(ds_proxy_ranks)),
                 "mrr": float(np.mean(ds_rr)),
                 "mrr@10": float(np.mean(np.where(ds_ranks <= 10, ds_rr, 0.0))),
+                "ndcg@10": float(np.mean(ds_ndcg)),
                 "recall@10": ds_recall_at_10,
+                "proxy_ndcg@10": float(
+                    np.mean(np.where(ds_proxy_ranks <= 10, 1.0 / np.log2(ds_proxy_ranks + 1.0), 0.0))
+                ),
+                "proxy_recall@10": ds_proxy_recall_at_10,
             }
         fig, ax = plt.subplots(figsize=(12, 5))
         x = np.arange(len(pos_cos))
@@ -605,6 +638,7 @@ class QueryDistillationTrainer:
                         "query_id": self._beir_probe_cases[i].get("query_id", ""),
                         "positive_doc_id": self._beir_probe_cases[i].get("positive_doc_id", ""),
                         "rank": int(ranks[i]),
+                        "proxy_rank": int(proxy_ranks[i]),
                         "pos_cosine": float(pos_cos[i]),
                         "neg_cosine": float(neg_cos[i]),
                         "gap": float(gaps[i]),
@@ -626,7 +660,9 @@ class QueryDistillationTrainer:
             f"gap={gap_mean:.6f} gap_std={float(np.std(gaps)):.6f} "
             f"rank_mean={float(rank_arr.mean()) if len(rank_arr) else 0.0:.6f} "
             f"rank_median={float(np.median(rank_arr)) if len(rank_arr) else 0.0:.6f} "
-            f"mrr@10={mrr_at_10 / denom:.6f} r@10={recall_at_10 / denom:.6f} plot={fig_path}",
+            f"mrr@10={mrr_at_10 / denom:.6f} ndcg@10={ndcg_at_10 / denom:.6f} "
+            f"proxy_ndcg@10={proxy_ndcg_at_10 / denom:.6f} "
+            f"r@10={recall_at_10 / denom:.6f} plot={fig_path}",
             flush=True,
         )
         probe_detail = {
@@ -648,9 +684,17 @@ class QueryDistillationTrainer:
                 "rank_median": float(np.median(rank_arr)) if len(rank_arr) else 0.0,
                 "rank_min": int(rank_arr.min()) if len(rank_arr) else 0,
                 "rank_max": int(rank_arr.max()) if len(rank_arr) else 0,
+                "proxy_rank_mean": float(proxy_rank_arr.mean()) if len(proxy_rank_arr) else 0.0,
+                "proxy_rank_median": float(np.median(proxy_rank_arr)) if len(proxy_rank_arr) else 0.0,
+                "proxy_rank_min": int(proxy_rank_arr.min()) if len(proxy_rank_arr) else 0,
+                "proxy_rank_max": int(proxy_rank_arr.max()) if len(proxy_rank_arr) else 0,
                 "mrr": float(rr_arr.mean()) if len(rr_arr) else 0.0,
                 "mrr@10": mrr_at_10 / denom,
+                "ndcg@10": ndcg_at_10 / denom,
                 "recall@10": recall_at_10 / denom,
+                "proxy_mrr@10": proxy_mrr_at_10 / denom,
+                "proxy_ndcg@10": proxy_ndcg_at_10 / denom,
+                "proxy_recall@10": proxy_recall_at_10 / denom,
             },
             "datasets": dataset_summaries,
             "cases": [
@@ -658,6 +702,7 @@ class QueryDistillationTrainer:
                     "idx": int(i),
                     "dataset": self._beir_probe_cases[i].get("dataset", "beir"),
                     "rank": int(ranks[i]),
+                    "proxy_rank": int(proxy_ranks[i]),
                     "pos_cosine": float(pos_cos[i]),
                     "neg_cosine": float(neg_cos[i]),
                     "gap": float(gaps[i]),
@@ -687,8 +732,16 @@ class QueryDistillationTrainer:
             "beir_probe_rank_median": float(np.median(rank_arr)) if len(rank_arr) else 0.0,
             "beir_probe_rank_min": float(rank_arr.min()) if len(rank_arr) else 0.0,
             "beir_probe_rank_max": float(rank_arr.max()) if len(rank_arr) else 0.0,
+            "beir_probe_proxy_rank_mean": float(proxy_rank_arr.mean()) if len(proxy_rank_arr) else 0.0,
+            "beir_probe_proxy_rank_median": float(np.median(proxy_rank_arr)) if len(proxy_rank_arr) else 0.0,
+            "beir_probe_proxy_rank_min": float(proxy_rank_arr.min()) if len(proxy_rank_arr) else 0.0,
+            "beir_probe_proxy_rank_max": float(proxy_rank_arr.max()) if len(proxy_rank_arr) else 0.0,
             "beir_probe_mrr@10": mrr_at_10 / denom,
+            "beir_probe_ndcg@10": ndcg_at_10 / denom,
             "beir_probe_recall@10": recall_at_10 / denom,
+            "beir_proxy_mrr@10": proxy_mrr_at_10 / denom,
+            "beir_proxy_ndcg@10": proxy_ndcg_at_10 / denom,
+            "beir_proxy_recall@10": proxy_recall_at_10 / denom,
         }
         for dataset_name, summary in dataset_summaries.items():
             metric_prefix = "beir_probe_" + re.sub(r"[^A-Za-z0-9_.-]+", "_", dataset_name)
@@ -697,6 +750,21 @@ class QueryDistillationTrainer:
                 self.writer.add_scalar(f"beir_probe_by_dataset/{dataset_name}/{key}", float(value), step)
         return metrics
 
+    def _selection_score(self, metrics: dict[str, float]) -> float:
+        if self.selection_metric in metrics:
+            return float(metrics[self.selection_metric])
+        if self.selection_metric == "gap" and "gap" in metrics:
+            return float(metrics["gap"])
+        fallback_keys = ("beir_proxy_ndcg@10", "beir_probe_ndcg@10", "beir_probe_mrr@10", "gap")
+        for key in fallback_keys:
+            if key in metrics:
+                print(
+                    f"[selection] metric {self.selection_metric!r} missing; falling back to {key}={metrics[key]:.6f}",
+                    flush=True,
+                )
+                return float(metrics[key])
+        return float("-inf")
+
     def train(self, num_epochs: int, val_every_n_steps: int, early_stopping_patience: int = 0) -> None:
         print(f"\n{'=' * 60}")
         target = f"{self.max_steps} steps" if self.max_steps > 0 else f"{num_epochs} epochs"
@@ -704,6 +772,7 @@ class QueryDistillationTrainer:
         print(f"Output directory: {self.output_dir}")
         print(f"Validation every {val_every_n_steps} steps")
         print(f"Gradient accumulation steps: {self.gradient_accumulation_steps}")
+        print(f"Selection metric: {self.selection_metric}")
         if early_stopping_patience > 0:
             print(f"Early stopping patience: {early_stopping_patience} validations")
         print(f"{'=' * 60}\n")
@@ -711,7 +780,7 @@ class QueryDistillationTrainer:
         self.save_checkpoint(0, val_metrics, True)
         global_step = 0
         micro_step = 0
-        best_score = float(val_metrics.get("beir_probe_mrr@10", val_metrics.get("gap", float("-inf"))))
+        best_score = self._selection_score(val_metrics)
         validations_without_improvement = 0
         self.optimizer.zero_grad(set_to_none=True)
         for epoch in range(1, num_epochs + 1):
@@ -750,7 +819,7 @@ class QueryDistillationTrainer:
                     self.writer.add_scalar("train/gradient_accumulation_steps", self.gradient_accumulation_steps, global_step)
                 if should_step and val_every_n_steps > 0 and global_step % val_every_n_steps == 0:
                     val_metrics = self.validate(global_step)
-                    score = float(val_metrics.get("beir_probe_mrr@10", val_metrics.get("gap", 0.0)))
+                    score = self._selection_score(val_metrics)
                     is_best = score > best_score
                     self.save_checkpoint(global_step, val_metrics, is_best=is_best)
                     if is_best:
@@ -807,6 +876,7 @@ def main() -> None:
     parser.add_argument("--beir-probe-samples-per-dataset", type=int, default=None)
     parser.add_argument("--beir-probe-negatives", type=int, default=20)
     parser.add_argument("--beir-probe-batch-size", type=int, default=8)
+    parser.add_argument("--selection-metric", default="beir_proxy_ndcg@10")
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--val-every", type=int, default=1000)
     parser.add_argument("--early-stopping-patience", type=int, default=0)
@@ -848,6 +918,7 @@ def main() -> None:
         beir_probe_samples_per_dataset=args.beir_probe_samples_per_dataset,
         beir_probe_negatives=args.beir_probe_negatives,
         beir_probe_batch_size=args.beir_probe_batch_size,
+        selection_metric=args.selection_metric,
         device=args.device,
         output_dir=args.output_dir,
         log_dir=args.log_dir,
