@@ -19,11 +19,11 @@ datasets:
   - name: scifact
     path: data/beir/scifact
   - name: arguana
-    path: arguana
+    path: ../arguana
   - name: trec-covid
-    path: trec-covid
+    path: ../trec-covid
   - name: quora
-    path: quora
+    path: ../quora
 metrics:
   top_k: [1, 3, 5, 10, 20]
   output_path: artifacts/results/retrieval/beir3_proxy_stage_b_leaf_summary.json
