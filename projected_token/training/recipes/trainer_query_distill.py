@@ -111,6 +111,7 @@ class QueryDistillationTrainer:
         dropout: float = 0.0,
         projector_hidden_dim: int = 8192,
         batch_size: int = 32,
+        gradient_accumulation_steps: int = 1,
         lr: float = 5e-5,
         min_lr: float = 1e-6,
         max_steps: int = 0,
@@ -126,6 +127,7 @@ class QueryDistillationTrainer:
         margin: float = 0.05,
         beir_probe_config: str | None = None,
         beir_probe_samples: int = 20,
+        beir_probe_samples_per_dataset: int | None = None,
         beir_probe_negatives: int = 20,
         beir_probe_batch_size: int = 8,
         device: str = "cuda:0",
@@ -135,6 +137,7 @@ class QueryDistillationTrainer:
         self.device = torch.device(device)
         self.oscar_model_name = oscar_model_name
         self.batch_size = int(batch_size)
+        self.gradient_accumulation_steps = max(1, int(gradient_accumulation_steps))
         self.base_lr = float(lr)
         self.min_lr = float(min_lr)
         self.max_steps = int(max_steps or 0)
@@ -150,6 +153,9 @@ class QueryDistillationTrainer:
         self.margin = float(margin)
         self.beir_probe_config = beir_probe_config
         self.beir_probe_samples = int(beir_probe_samples)
+        self.beir_probe_samples_per_dataset = (
+            int(beir_probe_samples_per_dataset) if beir_probe_samples_per_dataset is not None else None
+        )
         self.beir_probe_negatives = int(beir_probe_negatives)
         self.beir_probe_batch_size = int(beir_probe_batch_size)
         self.output_dir = Path(output_dir)
@@ -218,6 +224,7 @@ class QueryDistillationTrainer:
             "projector_hidden_dim": projector_hidden_dim,
             "num_layers": num_layers,
             "dropout": dropout,
+            "gradient_accumulation_steps": self.gradient_accumulation_steps,
             "projector_type": "mem",
             "training_objective": "query_doc_bge_distill",
         }
@@ -429,48 +436,64 @@ class QueryDistillationTrainer:
         datasets = cfg.get("datasets", [])
         if not datasets:
             return []
-        dataset_item = datasets[0]
-        dataset_name = str(dataset_item.get("name", "beir"))
-        dataset_dir = Path(dataset_item["path"])
-        qrels_path = dataset_dir / "qrels" / f"{cfg.get('split', 'test')}.tsv"
-        try:
-            corpus_rows = self._read_jsonl(dataset_dir / "corpus.jsonl")
-            query_rows = self._read_jsonl(dataset_dir / "queries.jsonl")
-        except Exception as exc:
-            print(f"[beir-probe] cannot load corpus/queries from {dataset_dir}: {exc}")
-            return []
-        corpus = {
-            str(r["_id"]): " ".join(p for p in [str(r.get("title", "")).strip(), str(r.get("text", "")).strip()] if p).strip()
-            for r in corpus_rows
-        }
-        queries = {str(r["_id"]): str(r.get("text", "")) for r in query_rows}
-        relevant: dict[str, set[str]] = {}
-        try:
-            with qrels_path.open("r", encoding="utf-8") as fp:
-                _ = fp.readline()
-                for line in fp:
-                    parts = line.strip().split("\t")
-                    if len(parts) >= 3 and int(parts[2]) > 0:
-                        relevant.setdefault(str(parts[0]), set()).add(str(parts[1]))
-        except Exception as exc:
-            print(f"[beir-probe] cannot read qrels {qrels_path}: {exc}")
-            return []
-        corpus_ids = list(corpus.keys())
-        candidate_qids = [qid for qid in relevant.keys() if qid in queries]
-        rng = np.random.default_rng(42)
-        rng.shuffle(candidate_qids)
         cases: list[dict[str, str]] = []
-        for qid in candidate_qids:
-            pos_ids = list(relevant.get(qid, set()))
-            if not pos_ids:
+        samples_per_dataset = self.beir_probe_samples_per_dataset or self.beir_probe_samples
+        for dataset_idx, dataset_item in enumerate(datasets):
+            dataset_name = str(dataset_item.get("name", f"beir_{dataset_idx}"))
+            dataset_dir = Path(dataset_item["path"])
+            qrels_path = dataset_dir / "qrels" / f"{cfg.get('split', 'test')}.tsv"
+            try:
+                corpus_rows = self._read_jsonl(dataset_dir / "corpus.jsonl")
+                query_rows = self._read_jsonl(dataset_dir / "queries.jsonl")
+            except Exception as exc:
+                print(f"[beir-probe] cannot load corpus/queries from {dataset_dir}: {exc}")
                 continue
-            pos_text = corpus.get(pos_ids[0], "")
-            neg_texts = [corpus[cid] for cid in corpus_ids if cid not in relevant[qid] and corpus.get(cid, "")]
-            if pos_text and neg_texts:
-                cases.append({"dataset": dataset_name, "query": queries[qid], "positive": pos_text, "negative": neg_texts[0], "negatives": neg_texts[: self.beir_probe_negatives]})
-            if len(cases) >= self.beir_probe_samples:
-                break
-        print(f"[beir-probe] loaded {len(cases)} cases from {dataset_name}")
+            corpus = {
+                str(r["_id"]): " ".join(
+                    p for p in [str(r.get("title", "")).strip(), str(r.get("text", "")).strip()] if p
+                ).strip()
+                for r in corpus_rows
+            }
+            queries = {str(r["_id"]): str(r.get("text", "")) for r in query_rows}
+            relevant: dict[str, set[str]] = {}
+            try:
+                with qrels_path.open("r", encoding="utf-8") as fp:
+                    _ = fp.readline()
+                    for line in fp:
+                        parts = line.strip().split("\t")
+                        if len(parts) >= 3 and int(parts[2]) > 0:
+                            relevant.setdefault(str(parts[0]), set()).add(str(parts[1]))
+            except Exception as exc:
+                print(f"[beir-probe] cannot read qrels {qrels_path}: {exc}")
+                continue
+            corpus_ids = list(corpus.keys())
+            candidate_qids = [qid for qid in relevant.keys() if qid in queries]
+            rng = np.random.default_rng(42 + dataset_idx)
+            rng.shuffle(candidate_qids)
+            dataset_cases = 0
+            for qid in candidate_qids:
+                pos_ids = list(relevant.get(qid, set()))
+                if not pos_ids:
+                    continue
+                pos_text = corpus.get(pos_ids[0], "")
+                neg_texts = [corpus[cid] for cid in corpus_ids if cid not in relevant[qid] and corpus.get(cid, "")]
+                if pos_text and neg_texts:
+                    cases.append(
+                        {
+                            "dataset": dataset_name,
+                            "query_id": qid,
+                            "positive_doc_id": pos_ids[0],
+                            "query": queries[qid],
+                            "positive": pos_text,
+                            "negative": neg_texts[0],
+                            "negatives": neg_texts[: self.beir_probe_negatives],
+                        }
+                    )
+                    dataset_cases += 1
+                if dataset_cases >= samples_per_dataset:
+                    break
+            print(f"[beir-probe] loaded {dataset_cases} cases from {dataset_name}")
+        print(f"[beir-probe] loaded {len(cases)} total cases from {len(datasets)} configured datasets")
         return cases
 
     def _encode_probe_texts(self, texts: list[str]) -> torch.Tensor:
@@ -518,6 +541,29 @@ class QueryDistillationTrainer:
         neg_mean = float(np.mean(neg_cos))
         gaps = pos_cos - neg_cos
         gap_mean = float(np.mean(gaps))
+        rank_arr = np.asarray(ranks, dtype=np.float32)
+        rr_arr = np.asarray(reciprocal_ranks, dtype=np.float32)
+        datasets = [str(case.get("dataset", "beir")) for case in self._beir_probe_cases]
+        dataset_summaries: dict[str, dict[str, float]] = {}
+        for dataset_name in sorted(set(datasets)):
+            indices = np.asarray([i for i, name in enumerate(datasets) if name == dataset_name], dtype=np.int64)
+            if indices.size == 0:
+                continue
+            ds_ranks = rank_arr[indices]
+            ds_rr = rr_arr[indices]
+            ds_recall_at_10 = float(np.mean(ds_ranks <= 10))
+            dataset_summaries[dataset_name] = {
+                "cases": float(indices.size),
+                "pos_cosine_mean": float(np.mean(pos_cos[indices])),
+                "neg_cosine_mean": float(np.mean(neg_cos[indices])),
+                "gap_mean": float(np.mean(gaps[indices])),
+                "gap_std": float(np.std(gaps[indices])),
+                "rank_mean": float(np.mean(ds_ranks)),
+                "rank_median": float(np.median(ds_ranks)),
+                "mrr": float(np.mean(ds_rr)),
+                "mrr@10": float(np.mean(np.where(ds_ranks <= 10, ds_rr, 0.0))),
+                "recall@10": ds_recall_at_10,
+            }
         fig, ax = plt.subplots(figsize=(12, 5))
         x = np.arange(len(pos_cos))
         ax.plot(x, pos_cos, marker="o", label="positive cosine")
@@ -532,8 +578,45 @@ class QueryDistillationTrainer:
         fig.savefig(fig_path, dpi=120)
         self.writer.add_figure("beir_probe/cosine_plot", fig, step)
         plt.close(fig)
-        rank_arr = np.asarray(ranks, dtype=np.float32)
-        rr_arr = np.asarray(reciprocal_ranks, dtype=np.float32)
+        for dataset_name, summary in dataset_summaries.items():
+            safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", dataset_name)
+            indices = np.asarray([i for i, name in enumerate(datasets) if name == dataset_name], dtype=np.int64)
+            ds_x = np.arange(indices.size)
+            ds_fig, ds_ax = plt.subplots(figsize=(10, 4))
+            ds_ax.plot(ds_x, pos_cos[indices], marker="o", label="positive cosine")
+            ds_ax.plot(ds_x, neg_cos[indices], marker="x", label="negative cosine")
+            ds_ax.axhline(summary["pos_cosine_mean"], linestyle="--", linewidth=1.0, label=f"pos mean={summary['pos_cosine_mean']:.3f}")
+            ds_ax.axhline(summary["neg_cosine_mean"], linestyle="--", linewidth=1.0, label=f"neg mean={summary['neg_cosine_mean']:.3f}")
+            ds_ax.set_title(f"BEIR probe {dataset_name} @ step {step}")
+            ds_ax.grid(alpha=0.25)
+            ds_ax.legend(loc="best")
+            ds_fig.tight_layout()
+            ds_fig_path = self.plots_dir / f"beir_probe_{safe_name}_step_{step}.png"
+            ds_fig.savefig(ds_fig_path, dpi=120)
+            self.writer.add_figure(f"beir_probe_by_dataset/{dataset_name}/cosine_plot", ds_fig, step)
+            plt.close(ds_fig)
+            dataset_detail = {
+                "step": int(step),
+                "dataset": dataset_name,
+                "summary": summary,
+                "cases": [
+                    {
+                        "idx": int(i),
+                        "query_id": self._beir_probe_cases[i].get("query_id", ""),
+                        "positive_doc_id": self._beir_probe_cases[i].get("positive_doc_id", ""),
+                        "rank": int(ranks[i]),
+                        "pos_cosine": float(pos_cos[i]),
+                        "neg_cosine": float(neg_cos[i]),
+                        "gap": float(gaps[i]),
+                    }
+                    for i in indices.tolist()
+                ],
+                "plot": str(ds_fig_path),
+            }
+            (self.metrics_dir / f"beir_probe_{safe_name}_step_{step}.json").write_text(
+                json.dumps(dataset_detail, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
         self.writer.add_histogram("beir_probe/pos_cosine", pos_cos, step)
         self.writer.add_histogram("beir_probe/neg_cosine", neg_cos, step)
         self.writer.add_histogram("beir_probe/gap", gaps, step)
@@ -569,6 +652,7 @@ class QueryDistillationTrainer:
                 "mrr@10": mrr_at_10 / denom,
                 "recall@10": recall_at_10 / denom,
             },
+            "datasets": dataset_summaries,
             "cases": [
                 {
                     "idx": int(i),
@@ -586,7 +670,7 @@ class QueryDistillationTrainer:
             encoding="utf-8",
         )
         self.writer.flush()
-        return {
+        metrics = {
             "beir_probe_pos_cosine_mean": pos_mean,
             "beir_probe_pos_cosine_std": float(np.std(pos_cos)),
             "beir_probe_pos_cosine_min": float(np.min(pos_cos)),
@@ -606,6 +690,12 @@ class QueryDistillationTrainer:
             "beir_probe_mrr@10": mrr_at_10 / denom,
             "beir_probe_recall@10": recall_at_10 / denom,
         }
+        for dataset_name, summary in dataset_summaries.items():
+            metric_prefix = "beir_probe_" + re.sub(r"[^A-Za-z0-9_.-]+", "_", dataset_name)
+            for key, value in summary.items():
+                metrics[f"{metric_prefix}_{key}"] = float(value)
+                self.writer.add_scalar(f"beir_probe_by_dataset/{dataset_name}/{key}", float(value), step)
+        return metrics
 
     def train(self, num_epochs: int, val_every_n_steps: int, early_stopping_patience: int = 0) -> None:
         print(f"\n{'=' * 60}")
@@ -613,40 +703,52 @@ class QueryDistillationTrainer:
         print(f"Starting query distillation training for {target}")
         print(f"Output directory: {self.output_dir}")
         print(f"Validation every {val_every_n_steps} steps")
+        print(f"Gradient accumulation steps: {self.gradient_accumulation_steps}")
         if early_stopping_patience > 0:
             print(f"Early stopping patience: {early_stopping_patience} validations")
         print(f"{'=' * 60}\n")
         val_metrics = self.validate(0)
         self.save_checkpoint(0, val_metrics, True)
         global_step = 0
+        micro_step = 0
         best_score = float(val_metrics.get("beir_probe_mrr@10", val_metrics.get("gap", float("-inf"))))
         validations_without_improvement = 0
+        self.optimizer.zero_grad(set_to_none=True)
         for epoch in range(1, num_epochs + 1):
             self.projector.train()
             pbar = tqdm(self.train_loader, desc=f"Epoch {epoch}")
             for batch in pbar:
-                global_step += 1
-                if self.max_steps > 0:
-                    self._step_lr(global_step)
+                micro_step += 1
                 loss, metrics = self.compute_loss({k: (v.to(self.device) if torch.is_tensor(v) else v) for k, v in batch.items()})
-                self.optimizer.zero_grad()
-                loss.backward()
-                grad_norm = torch.nn.utils.clip_grad_norm_(self.projector.parameters(), max_norm=1.0).item()
-                self.optimizer.step()
+                (loss / self.gradient_accumulation_steps).backward()
+                should_step = micro_step % self.gradient_accumulation_steps == 0
+                grad_norm = float("nan")
+                if should_step:
+                    global_step += 1
+                    if self.max_steps > 0:
+                        self._step_lr(global_step)
+                    grad_norm = torch.nn.utils.clip_grad_norm_(self.projector.parameters(), max_norm=1.0).item()
+                    self.optimizer.step()
+                    self.optimizer.zero_grad(set_to_none=True)
                 pbar.set_postfix({
                     "loss": f"{loss.item():.6f}",
                     "q_mse": f"{metrics['query_mse']:.6f}",
                     "d_mse": f"{metrics['positive_mse']:.6f}",
                     "rank": f"{metrics['ranking_loss']:.6f}",
                     "gap": f"{metrics['gap']:.4f}",
-                    "grad": f"{grad_norm:.4f}",
+                    "grad": f"{grad_norm:.4f}" if should_step else "accum",
+                    "accum": f"{micro_step % self.gradient_accumulation_steps}/{self.gradient_accumulation_steps}",
                     "lr": f"{self.optimizer.param_groups[0]['lr']:.2e}",
                 })
-                for key, value in metrics.items():
-                    self.writer.add_scalar(f"train/{key}", value, global_step)
-                self.writer.add_scalar("train/loss_total", float(loss.item()), global_step)
-                self.writer.add_scalar("train/lr", self.optimizer.param_groups[0]["lr"], global_step)
-                if val_every_n_steps > 0 and global_step % val_every_n_steps == 0:
+                if should_step:
+                    for key, value in metrics.items():
+                        self.writer.add_scalar(f"train/{key}", value, global_step)
+                    self.writer.add_scalar("train/loss_total", float(loss.item()), global_step)
+                    self.writer.add_scalar("train/lr", self.optimizer.param_groups[0]["lr"], global_step)
+                    self.writer.add_scalar("train/grad_norm", float(grad_norm), global_step)
+                    self.writer.add_scalar("train/micro_step", micro_step, global_step)
+                    self.writer.add_scalar("train/gradient_accumulation_steps", self.gradient_accumulation_steps, global_step)
+                if should_step and val_every_n_steps > 0 and global_step % val_every_n_steps == 0:
                     val_metrics = self.validate(global_step)
                     score = float(val_metrics.get("beir_probe_mrr@10", val_metrics.get("gap", 0.0)))
                     is_best = score > best_score
@@ -686,6 +788,7 @@ def main() -> None:
     parser.add_argument("--dropout", type=float, default=0.0)
     parser.add_argument("--projector-hidden-dim", type=int, default=8192)
     parser.add_argument("--batch-size", type=int, default=32)
+    parser.add_argument("--gradient-accumulation-steps", type=int, default=1)
     parser.add_argument("--lr", type=float, default=5e-5)
     parser.add_argument("--min-lr", type=float, default=1e-6)
     parser.add_argument("--max-steps", type=int, default=0)
@@ -701,6 +804,7 @@ def main() -> None:
     parser.add_argument("--margin", type=float, default=0.05)
     parser.add_argument("--beir-probe-config", default=None)
     parser.add_argument("--beir-probe-samples", type=int, default=20)
+    parser.add_argument("--beir-probe-samples-per-dataset", type=int, default=None)
     parser.add_argument("--beir-probe-negatives", type=int, default=20)
     parser.add_argument("--beir-probe-batch-size", type=int, default=8)
     parser.add_argument("--epochs", type=int, default=1)
@@ -725,6 +829,7 @@ def main() -> None:
         dropout=args.dropout,
         projector_hidden_dim=args.projector_hidden_dim,
         batch_size=args.batch_size,
+        gradient_accumulation_steps=args.gradient_accumulation_steps,
         lr=args.lr,
         min_lr=args.min_lr,
         max_steps=args.max_steps,
@@ -740,6 +845,7 @@ def main() -> None:
         margin=args.margin,
         beir_probe_config=args.beir_probe_config,
         beir_probe_samples=args.beir_probe_samples,
+        beir_probe_samples_per_dataset=args.beir_probe_samples_per_dataset,
         beir_probe_negatives=args.beir_probe_negatives,
         beir_probe_batch_size=args.beir_probe_batch_size,
         device=args.device,
