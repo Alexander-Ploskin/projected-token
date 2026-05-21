@@ -257,8 +257,26 @@ class OscarProjectorEncoder(Encoder):
                 projector_hidden_dim = checkpoint_config.get("projector_hidden_dim", projector_hidden_dim)
                 oscar_hidden_dim = checkpoint_config.get("oscar_hidden_dim")
         
-        # Detect if this is a DistillationProjector (has oscar_hidden_dim in config)
-        use_distillation = oscar_hidden_dim is not None
+        # Detect projector architecture.
+        # Query-side distillation checkpoints are trained with MEMProjector, while
+        # older distillation checkpoints may use DistillationProjector. Infer from
+        # checkpoint objective and state_dict layout first, then fallback to config.
+        use_distillation = False
+        training_objective = checkpoint_config.get("training_objective") if checkpoint_config else None
+        if training_objective == "query_doc_bge_distill":
+            use_distillation = False
+        elif checkpoint is not None and "model_state_dict" in checkpoint:
+            model_state = checkpoint["model_state_dict"]
+            has_distill_signature = "mlp.1.weight" in model_state and "mlp.4.weight" not in model_state
+            has_mem_signature = "mlp.4.weight" in model_state
+            if has_distill_signature:
+                use_distillation = True
+            elif has_mem_signature:
+                use_distillation = False
+            else:
+                use_distillation = oscar_hidden_dim is not None
+        else:
+            use_distillation = oscar_hidden_dim is not None
         
         if use_distillation:
             print(f"Using DistillationProjector (oscar_hidden_dim={oscar_hidden_dim})")

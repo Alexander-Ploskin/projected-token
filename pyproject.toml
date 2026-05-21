@@ -36,6 +36,7 @@ sentence-transformers = "^5.4.1"
 matplotlib = "^3.10.8"
 h5py = "^3.16.0"
 pyyaml = "^6.0.2"
+rank-bm25 = "^0.2.2"
 
 [tool.poetry.scripts]
 projected-token = "projected_token.cli.main:cli"

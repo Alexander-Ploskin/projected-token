@@ -155,11 +155,16 @@ class QueryDistillationTrainer:
         self.output_dir = Path(output_dir)
         self.log_dir = Path(log_dir)
         self.run_root = self.output_dir.parent if self.output_dir.name == "checkpoints" else self.output_dir
+        self.metrics_dir = self.run_root / "metrics"
         self.plots_dir = self.run_root / "plots"
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.log_dir.mkdir(parents=True, exist_ok=True)
+        self.metrics_dir.mkdir(parents=True, exist_ok=True)
         self.plots_dir.mkdir(parents=True, exist_ok=True)
         self.writer = SummaryWriter(log_dir=str(self.log_dir))
+        self.val_history_path = self.metrics_dir / "query_distill_val_history.json"
+        self.checkpoint_val_history_path = self.output_dir / "val_metrics_history.json"
+        self.val_history: list[dict[str, float]] = self._load_val_history()
 
         disable_transformers_allocator_warmup()
         print(f"Loading OSCAR model: {oscar_model_name}")
@@ -218,6 +223,35 @@ class QueryDistillationTrainer:
         }
         self._beir_probe_cases = self._load_beir_probe_cases()
         self.load_checkpoint()
+
+    def _load_val_history(self) -> list[dict[str, float]]:
+        for path in (self.val_history_path, self.checkpoint_val_history_path):
+            if not path.exists():
+                continue
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError as exc:
+                print(f"[val-history] cannot parse {path}: {exc}")
+                continue
+            if isinstance(payload, list):
+                return [row for row in payload if isinstance(row, dict)]
+        return []
+
+    def _write_val_history(self) -> None:
+        payload = json.dumps(self.val_history, indent=2, ensure_ascii=False)
+        self.val_history_path.write_text(payload, encoding="utf-8")
+        self.checkpoint_val_history_path.write_text(payload, encoding="utf-8")
+
+    def _record_val_metrics(self, step: int, metrics: dict[str, float]) -> None:
+        row = {"step": int(step), **metrics}
+        for idx, existing in enumerate(self.val_history):
+            if int(existing.get("step", -1)) == int(step):
+                self.val_history[idx] = row
+                break
+        else:
+            self.val_history.append(row)
+        self.val_history.sort(key=lambda item: int(item.get("step", -1)))
+        self._write_val_history()
 
     def load_checkpoint(self) -> None:
         best_path = self.output_dir / "best_model.pt"
@@ -293,7 +327,28 @@ class QueryDistillationTrainer:
                 count += 1
         out = {key: value / max(1, count) for key, value in totals.items()}
         out.update(self.run_beir_probe(step))
-        print(f"[val] step={step} " + " ".join(f"{k}={v:.6f}" for k, v in out.items() if isinstance(v, float)))
+        print(f"[val] step={step}", flush=True)
+        print(
+            "[val] losses "
+            + " ".join(
+                f"{key}={out[key]:.6f}"
+                for key in ("loss_total", "query_mse", "positive_mse", "negative_mse", "ranking_loss", "infonce_loss")
+                if key in out
+            ),
+            flush=True,
+        )
+        print(
+            "[val] retrieval "
+            + " ".join(
+                f"{key}={out[key]:.6f}"
+                for key in ("pos_sim", "neg_sim", "gap", "beir_probe_mrr@10", "beir_probe_recall@10")
+                if key in out
+            ),
+            flush=True,
+        )
+        probe_keys = [key for key in out if key.startswith("beir_probe_") and key not in {"beir_probe_mrr@10", "beir_probe_recall@10"}]
+        if probe_keys:
+            print("[val] beir_probe " + " ".join(f"{key}={out[key]:.6f}" for key in sorted(probe_keys)), flush=True)
         for key, value in out.items():
             self.writer.add_scalar(f"val/{key}", value, step)
         return out
@@ -307,7 +362,11 @@ class QueryDistillationTrainer:
         }
         torch.save(checkpoint, self.output_dir / f"checkpoint_step_{step}.pt")
         (self.output_dir / "config.json").write_text(json.dumps(self.projector_config, indent=2), encoding="utf-8")
-        (self.output_dir / "metrics.json").write_text(json.dumps({"val": metrics}, indent=2), encoding="utf-8")
+        self._record_val_metrics(step, metrics)
+        (self.output_dir / "metrics.json").write_text(
+            json.dumps({"step": int(step), "val": metrics}, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
         if is_best:
             torch.save(checkpoint, self.output_dir / "best_model.pt")
             (self.output_dir / "best_config.json").write_text(json.dumps(self.projector_config, indent=2), encoding="utf-8")
@@ -435,17 +494,19 @@ class QueryDistillationTrainer:
         }
 
     def train(self, num_epochs: int, val_every_n_steps: int, early_stopping_patience: int = 0) -> None:
-        del early_stopping_patience
         print(f"\n{'=' * 60}")
         target = f"{self.max_steps} steps" if self.max_steps > 0 else f"{num_epochs} epochs"
         print(f"Starting query distillation training for {target}")
         print(f"Output directory: {self.output_dir}")
         print(f"Validation every {val_every_n_steps} steps")
+        if early_stopping_patience > 0:
+            print(f"Early stopping patience: {early_stopping_patience} validations")
         print(f"{'=' * 60}\n")
         val_metrics = self.validate(0)
         self.save_checkpoint(0, val_metrics, True)
         global_step = 0
-        best_score = float("-inf")
+        best_score = float(val_metrics.get("beir_probe_mrr@10", val_metrics.get("gap", float("-inf"))))
+        validations_without_improvement = 0
         for epoch in range(1, num_epochs + 1):
             self.projector.train()
             pbar = tqdm(self.train_loader, desc=f"Epoch {epoch}")
@@ -474,8 +535,22 @@ class QueryDistillationTrainer:
                 if val_every_n_steps > 0 and global_step % val_every_n_steps == 0:
                     val_metrics = self.validate(global_step)
                     score = float(val_metrics.get("beir_probe_mrr@10", val_metrics.get("gap", 0.0)))
-                    self.save_checkpoint(global_step, val_metrics, is_best=score > best_score)
-                    best_score = max(best_score, score)
+                    is_best = score > best_score
+                    self.save_checkpoint(global_step, val_metrics, is_best=is_best)
+                    if is_best:
+                        best_score = score
+                        validations_without_improvement = 0
+                    else:
+                        validations_without_improvement += 1
+                        if early_stopping_patience > 0 and validations_without_improvement >= early_stopping_patience:
+                            print(
+                                f"Early stopping at step {global_step}: "
+                                f"best_score={best_score:.6f}, current_score={score:.6f}"
+                            )
+                            self.writer.close()
+                            self.train_dataset.close()
+                            self.val_dataset.close()
+                            return
                     self.projector.train()
                 if self.max_steps > 0 and global_step >= self.max_steps:
                     self.writer.close()
