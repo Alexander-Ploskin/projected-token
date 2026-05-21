@@ -18,6 +18,8 @@ from projected_token.training.matrix_runner import run_matrix
 from projected_token.training.recipe_runner import run_training
 from projected_token.training.final_report import build_final_report
 from projected_token.training.oscar_retrieval_roadmap import run_roadmap
+from projected_token.analysis.aggregate_beir3_results import aggregate_beir3_results
+from projected_token.analysis.mem_latent_diagnostics import DEFAULT_POOLERS, run_mem_latent_diagnostics
 
 
 def _judge_config(base_url: str | None, api_key: str | None, model: str | None, config: str | None = None) -> dict[str, Any] | None:
@@ -159,6 +161,69 @@ def build_final_report_cmd(
     )
 
 
+@cli.command(name="aggregate-beir3")
+@click.option("--summary", "summary_paths", multiple=True, required=True, type=click.Path(exists=True))
+@click.option("--output-dir", required=True, type=click.Path())
+def aggregate_beir3_cmd(summary_paths: tuple[str, ...], output_dir: str) -> None:
+    """Aggregate multiple BEIR3 summaries into comparison artifacts."""
+    result = aggregate_beir3_results([Path(path) for path in summary_paths], Path(output_dir))
+    click.echo(f"Aggregated {len(result['runs'])} BEIR3 run(s) into: {output_dir}")
+
+
+@cli.group()
+def analysis() -> None:
+    """Run offline analysis and diagnostic jobs."""
+
+
+@analysis.command(name="mem-latents")
+@click.option("--beir-config", required=True, type=click.Path(exists=True))
+@click.option("--oscar-model", required=True)
+@click.option("--output-dir", default="artifacts/analysis/mem_latent_diagnostics", type=click.Path())
+@click.option("--poolers", default=",".join(DEFAULT_POOLERS), show_default=True)
+@click.option("--device", default="cuda:0", show_default=True)
+@click.option("--batch-size", type=int, default=16, show_default=True)
+@click.option("--max-docs-for-cosine", type=int, default=1000, show_default=True)
+@click.option("--teacher-h5", multiple=True, type=click.Path())
+@click.option("--teacher-max-samples", type=int, default=2000, show_default=True)
+@click.option("--teacher-train-fraction", type=float, default=0.8, show_default=True)
+@click.option("--torch-dtype", default="bfloat16", show_default=True)
+@click.option("--no-trust-remote-code", is_flag=True, default=False)
+@click.option("--seed", type=int, default=42, show_default=True)
+def analysis_mem_latents(
+    beir_config: str,
+    oscar_model: str,
+    output_dir: str,
+    poolers: str,
+    device: str,
+    batch_size: int,
+    max_docs_for_cosine: int,
+    teacher_h5: tuple[str, ...],
+    teacher_max_samples: int,
+    teacher_train_fraction: float,
+    torch_dtype: str,
+    no_trust_remote_code: bool,
+    seed: int,
+) -> None:
+    """Diagnose raw OSCAR MEM latents with pooling, probes, and BEIR retrieval."""
+    summary = run_mem_latent_diagnostics(
+        beir_config_path=Path(beir_config),
+        oscar_model=oscar_model,
+        output_dir=Path(output_dir),
+        poolers=poolers.split(","),
+        device=device,
+        batch_size=batch_size,
+        max_docs_for_cosine=max_docs_for_cosine,
+        teacher_h5=list(teacher_h5),
+        teacher_max_samples=teacher_max_samples,
+        teacher_train_fraction=teacher_train_fraction,
+        torch_dtype_name=torch_dtype,
+        trust_remote_code=not no_trust_remote_code,
+        seed=seed,
+    )
+    click.echo(f"MEM latent diagnostics saved in: {output_dir}")
+    click.echo(f"Run id: {summary['run_id']}")
+
+
 @cli.group()
 def retrieval() -> None:
     """Build and evaluate retrieval indexes."""
@@ -230,6 +295,24 @@ def data_mixed_dataset(ctx: click.Context) -> None:
 @click.pass_context
 def data_hard_negatives(ctx: click.Context) -> None:
     _run_recipe_module("projected_token.data.recipes.generate_hard_negatives", tuple(ctx.args))
+
+
+@data.command(context_settings={"ignore_unknown_options": True, "allow_extra_args": True}, name="leaf-corpus")
+@click.pass_context
+def data_leaf_corpus(ctx: click.Context) -> None:
+    _run_recipe_module("projected_token.data.recipes.prepare_leaf_corpus", tuple(ctx.args))
+
+
+@data.command(context_settings={"ignore_unknown_options": True, "allow_extra_args": True}, name="leaf-teacher-embeddings")
+@click.pass_context
+def data_leaf_teacher_embeddings(ctx: click.Context) -> None:
+    _run_recipe_module("projected_token.data.recipes.generate_leaf_teacher_embeddings", tuple(ctx.args))
+
+
+@data.command(context_settings={"ignore_unknown_options": True, "allow_extra_args": True}, name="query-doc-teacher-embeddings")
+@click.pass_context
+def data_query_doc_teacher_embeddings(ctx: click.Context) -> None:
+    _run_recipe_module("projected_token.data.recipes.generate_query_doc_teacher_embeddings", tuple(ctx.args))
 
 
 @data.command(context_settings={"ignore_unknown_options": True, "allow_extra_args": True}, name="teacher-embeddings")

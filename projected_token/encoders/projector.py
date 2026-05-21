@@ -5,7 +5,7 @@ from typing import Optional, Literal
 from peft import LoraConfig, get_peft_model
 
 
-PoolerType = Literal["mean", "first", "last", "max", "mean_max", "flatten"]
+PoolerType = Literal["mean", "first", "last", "max", "mean_max", "first_last", "flatten"]
 
 
 class BaseMEMProjector(nn.Module):
@@ -29,7 +29,7 @@ class BaseMEMProjector(nn.Module):
             mem_hiddens: [batch, num_mem_tokens, hidden_dim]
 
         Returns:
-            [batch, hidden_dim] или [batch, hidden_dim*2] для mean_max,
+            [batch, hidden_dim] или [batch, hidden_dim*2] для mean_max/first_last,
             или [batch, num_mem_tokens * hidden_dim] для flatten
         """
         if self.pooler == "mean":
@@ -44,6 +44,8 @@ class BaseMEMProjector(nn.Module):
             mean_emb = mem_hiddens.mean(dim=1)
             max_emb = mem_hiddens.max(dim=1).values
             return torch.cat([mean_emb, max_emb], dim=-1)
+        elif self.pooler == "first_last":
+            return torch.cat([mem_hiddens[:, 0, :], mem_hiddens[:, -1, :]], dim=-1)
         elif self.pooler == "flatten":
             return mem_hiddens.view(mem_hiddens.size(0), -1)
         else:
@@ -51,7 +53,7 @@ class BaseMEMProjector(nn.Module):
 
     @property
     def output_dim(self) -> int:
-        if self.pooler == "mean_max":
+        if self.pooler in {"mean_max", "first_last"}:
             return self.hidden_dim * 2
         elif self.pooler == "flatten":
             return self.hidden_dim * 8  # 8 mem tokens
@@ -90,7 +92,7 @@ class MEMProjector(BaseMEMProjector):
             projector_hidden_dim = hidden_dim
 
         # Calculate actual input dimension based on pooler
-        if pooler == "mean_max":
+        if pooler in {"mean_max", "first_last"}:
             actual_input_dim = hidden_dim * 2
         elif pooler == "flatten":
             actual_input_dim = hidden_dim * 8  # 8 mem tokens
@@ -145,7 +147,7 @@ class LoRAMEMProjector(BaseMEMProjector):
         super().__init__(hidden_dim, embed_dim, pooler)
 
         # Calculate actual input dimension based on pooler
-        if pooler == "mean_max":
+        if pooler in {"mean_max", "first_last"}:
             actual_input_dim = hidden_dim * 2
         elif pooler == "flatten":
             actual_input_dim = hidden_dim * 8  # 8 mem tokens
