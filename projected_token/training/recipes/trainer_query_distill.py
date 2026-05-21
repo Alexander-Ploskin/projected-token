@@ -291,6 +291,7 @@ class QueryDistillationTrainer:
         n_mse = F.mse_loss(n, n_t)
         pos_sim = (q * p).sum(dim=-1)
         neg_sim = (q * n).sum(dim=-1)
+        gap = pos_sim - neg_sim
         ranking_loss = torch.relu(self.margin - pos_sim + neg_sim).mean()
         logits = torch.matmul(q, p.T) / max(self.temperature, 1e-6)
         labels = torch.arange(q.size(0), device=q.device)
@@ -310,13 +311,20 @@ class QueryDistillationTrainer:
             "infonce_loss": float(infonce_loss.item()),
             "pos_sim": float(pos_sim.mean().item()),
             "neg_sim": float(neg_sim.mean().item()),
-            "gap": float((pos_sim - neg_sim).mean().item()),
+            "gap": float(gap.mean().item()),
+            "pos_sim_std": float(pos_sim.std(unbiased=False).item()),
+            "neg_sim_std": float(neg_sim.std(unbiased=False).item()),
+            "gap_std": float(gap.std(unbiased=False).item()),
+            "gap_min": float(gap.min().item()),
+            "gap_max": float(gap.max().item()),
+            "ranking_active_frac": float((self.margin - pos_sim + neg_sim > 0).float().mean().item()),
         }
         return total, metrics
 
     def validate(self, step: int) -> dict[str, float]:
         self.projector.eval()
         totals: dict[str, float] = {}
+        per_batch: dict[str, list[float]] = {}
         count = 0
         with torch.no_grad():
             for batch in tqdm(self.val_loader, desc="Validation"):
@@ -324,8 +332,14 @@ class QueryDistillationTrainer:
                 metrics["loss_total"] = float(loss.item())
                 for key, value in metrics.items():
                     totals[key] = totals.get(key, 0.0) + value
+                    per_batch.setdefault(key, []).append(float(value))
                 count += 1
         out = {key: value / max(1, count) for key, value in totals.items()}
+        for key, values in per_batch.items():
+            arr = np.asarray(values, dtype=np.float32)
+            out[f"{key}_batch_std"] = float(arr.std())
+            out[f"{key}_batch_min"] = float(arr.min())
+            out[f"{key}_batch_max"] = float(arr.max())
         out.update(self.run_beir_probe(step))
         print(f"[val] step={step}", flush=True)
         print(
@@ -341,16 +355,44 @@ class QueryDistillationTrainer:
             "[val] retrieval "
             + " ".join(
                 f"{key}={out[key]:.6f}"
-                for key in ("pos_sim", "neg_sim", "gap", "beir_probe_mrr@10", "beir_probe_recall@10")
+                for key in (
+                    "pos_sim",
+                    "neg_sim",
+                    "gap",
+                    "pos_sim_std",
+                    "neg_sim_std",
+                    "gap_std",
+                    "gap_min",
+                    "gap_max",
+                    "ranking_active_frac",
+                    "beir_probe_mrr@10",
+                    "beir_probe_recall@10",
+                )
                 if key in out
             ),
             flush=True,
         )
+        batch_stat_keys = [key for key in out if key.endswith(("_batch_std", "_batch_min", "_batch_max"))]
+        if batch_stat_keys:
+            print("[val] batch_stats " + " ".join(f"{key}={out[key]:.6f}" for key in sorted(batch_stat_keys)), flush=True)
         probe_keys = [key for key in out if key.startswith("beir_probe_") and key not in {"beir_probe_mrr@10", "beir_probe_recall@10"}]
         if probe_keys:
             print("[val] beir_probe " + " ".join(f"{key}={out[key]:.6f}" for key in sorted(probe_keys)), flush=True)
         for key, value in out.items():
             self.writer.add_scalar(f"val/{key}", value, step)
+        self.writer.add_scalar("val/meta/num_batches", count, step)
+        self.writer.add_scalar("val/meta/num_examples", len(self.val_dataset), step)
+        if per_batch:
+            validation_detail = {
+                "step": int(step),
+                "metrics": out,
+                "per_batch": per_batch,
+            }
+            (self.metrics_dir / f"validation_step_{step}.json").write_text(
+                json.dumps(validation_detail, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        self.writer.flush()
         return out
 
     def save_checkpoint(self, step: int, metrics: dict[str, float], is_best: bool = False) -> None:
@@ -461,16 +503,21 @@ class QueryDistillationTrainer:
             similarities = torch.matmul(q_emb, cand_emb.T).cpu().numpy()
         mrr_at_10 = 0.0
         recall_at_10 = 0.0
+        ranks: list[int] = []
+        reciprocal_ranks: list[float] = []
         for i, (start, stop) in enumerate(offsets):
             local_scores = similarities[i, start:stop]
             rank = int(np.where(np.argsort(-local_scores) == 0)[0][0]) + 1
+            ranks.append(rank)
+            reciprocal_ranks.append(1.0 / rank)
             if rank <= 10:
                 mrr_at_10 += 1.0 / rank
                 recall_at_10 += 1.0
         denom = max(1, len(offsets))
         pos_mean = float(np.mean(pos_cos))
         neg_mean = float(np.mean(neg_cos))
-        gap_mean = float(np.mean(pos_cos - neg_cos))
+        gaps = pos_cos - neg_cos
+        gap_mean = float(np.mean(gaps))
         fig, ax = plt.subplots(figsize=(12, 5))
         x = np.arange(len(pos_cos))
         ax.plot(x, pos_cos, marker="o", label="positive cosine")
@@ -483,12 +530,79 @@ class QueryDistillationTrainer:
         fig.tight_layout()
         fig_path = self.plots_dir / f"beir_probe_step_{step}.png"
         fig.savefig(fig_path, dpi=120)
+        self.writer.add_figure("beir_probe/cosine_plot", fig, step)
         plt.close(fig)
-        print(f"[beir-probe] step={step} pos_mean={pos_mean:.6f} neg_mean={neg_mean:.6f} gap={gap_mean:.6f} mrr@10={mrr_at_10 / denom:.6f} r@10={recall_at_10 / denom:.6f} plot={fig_path}")
+        rank_arr = np.asarray(ranks, dtype=np.float32)
+        rr_arr = np.asarray(reciprocal_ranks, dtype=np.float32)
+        self.writer.add_histogram("beir_probe/pos_cosine", pos_cos, step)
+        self.writer.add_histogram("beir_probe/neg_cosine", neg_cos, step)
+        self.writer.add_histogram("beir_probe/gap", gaps, step)
+        self.writer.add_histogram("beir_probe/rank", rank_arr, step)
+        print(
+            f"[beir-probe] step={step} pos_mean={pos_mean:.6f} neg_mean={neg_mean:.6f} "
+            f"gap={gap_mean:.6f} gap_std={float(np.std(gaps)):.6f} "
+            f"rank_mean={float(rank_arr.mean()) if len(rank_arr) else 0.0:.6f} "
+            f"rank_median={float(np.median(rank_arr)) if len(rank_arr) else 0.0:.6f} "
+            f"mrr@10={mrr_at_10 / denom:.6f} r@10={recall_at_10 / denom:.6f} plot={fig_path}",
+            flush=True,
+        )
+        probe_detail = {
+            "step": int(step),
+            "summary": {
+                "pos_cosine_mean": pos_mean,
+                "pos_cosine_std": float(np.std(pos_cos)),
+                "pos_cosine_min": float(np.min(pos_cos)),
+                "pos_cosine_max": float(np.max(pos_cos)),
+                "neg_cosine_mean": neg_mean,
+                "neg_cosine_std": float(np.std(neg_cos)),
+                "neg_cosine_min": float(np.min(neg_cos)),
+                "neg_cosine_max": float(np.max(neg_cos)),
+                "gap_mean": gap_mean,
+                "gap_std": float(np.std(gaps)),
+                "gap_min": float(np.min(gaps)),
+                "gap_max": float(np.max(gaps)),
+                "rank_mean": float(rank_arr.mean()) if len(rank_arr) else 0.0,
+                "rank_median": float(np.median(rank_arr)) if len(rank_arr) else 0.0,
+                "rank_min": int(rank_arr.min()) if len(rank_arr) else 0,
+                "rank_max": int(rank_arr.max()) if len(rank_arr) else 0,
+                "mrr": float(rr_arr.mean()) if len(rr_arr) else 0.0,
+                "mrr@10": mrr_at_10 / denom,
+                "recall@10": recall_at_10 / denom,
+            },
+            "cases": [
+                {
+                    "idx": int(i),
+                    "dataset": self._beir_probe_cases[i].get("dataset", "beir"),
+                    "rank": int(ranks[i]),
+                    "pos_cosine": float(pos_cos[i]),
+                    "neg_cosine": float(neg_cos[i]),
+                    "gap": float(gaps[i]),
+                }
+                for i in range(len(ranks))
+            ],
+        }
+        (self.metrics_dir / f"beir_probe_step_{step}.json").write_text(
+            json.dumps(probe_detail, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        self.writer.flush()
         return {
             "beir_probe_pos_cosine_mean": pos_mean,
+            "beir_probe_pos_cosine_std": float(np.std(pos_cos)),
+            "beir_probe_pos_cosine_min": float(np.min(pos_cos)),
+            "beir_probe_pos_cosine_max": float(np.max(pos_cos)),
             "beir_probe_neg_cosine_mean": neg_mean,
+            "beir_probe_neg_cosine_std": float(np.std(neg_cos)),
+            "beir_probe_neg_cosine_min": float(np.min(neg_cos)),
+            "beir_probe_neg_cosine_max": float(np.max(neg_cos)),
             "beir_probe_gap_mean": gap_mean,
+            "beir_probe_gap_std": float(np.std(gaps)),
+            "beir_probe_gap_min": float(np.min(gaps)),
+            "beir_probe_gap_max": float(np.max(gaps)),
+            "beir_probe_rank_mean": float(rank_arr.mean()) if len(rank_arr) else 0.0,
+            "beir_probe_rank_median": float(np.median(rank_arr)) if len(rank_arr) else 0.0,
+            "beir_probe_rank_min": float(rank_arr.min()) if len(rank_arr) else 0.0,
+            "beir_probe_rank_max": float(rank_arr.max()) if len(rank_arr) else 0.0,
             "beir_probe_mrr@10": mrr_at_10 / denom,
             "beir_probe_recall@10": recall_at_10 / denom,
         }
