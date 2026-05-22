@@ -1,3 +1,57 @@
+Проанализируй:
+1. Конфигурацию обучения:
+recipe: query_distill
+run_id: stage-b-query-distill-dataablate-msmarco-bm25-30-100-mse-only-5ep-resume2750-noes
+run_base_dir: artifacts/query_distill_runs_5ep_resume2750_noes
+oscar_model: naver/oscar-qwen2-7B
+teacher_embeddings:
+  - artifacts/teacher-embeddings/query-doc-bge-base-full/msmarco-hard.h5
+  - artifacts/teacher-embeddings/query-doc-bge-base-full/nfcorpus-train-hard.h5
+  - artifacts/teacher-embeddings/query-doc-bge-base-full/fiqa-train-hard.h5
+  - artifacts/teacher-embeddings/query-doc-bge-base-full/arguana-train-hard.h5
+  - artifacts/teacher-embeddings/query-doc-bge-base-full/quora-train-hard.h5
+  - artifacts/teacher-embeddings/query-doc-bge-base-full/scifact-train-hard.h5
+embed_dim: 768
+pooler: flatten
+dropout: 0.0
+projector_hidden_dim: 8192
+num_layers: 2
+batch_size: 64
+gradient_accumulation_steps: 1
+lr: 2.0e-5
+min_lr: 1.0e-6
+max_steps: 20000
+epochs: 5
+warmup_steps: 1000
+scheduler: cosine
+query_mse_weight: 1.0
+doc_mse_weight: 1.0
+negative_mse_weight: 0.0
+ranking_weight: 0.0
+infonce_weight: 0.0
+temperature: 0.07
+margin: 0.20
+val_split: 0.02
+val_every: 250
+early_stopping_patience: 0
+beir_probe_config: configs/retrieval/beir3_proxy_scifact_dev.yaml
+beir_probe_samples: 50
+beir_probe_samples_per_dataset: 50
+beir_probe_negatives: 50
+beir_probe_batch_size: 8
+selection_metric: beir_proxy_ndcg@10
+dataset_sampling_weights:
+  msmarco: 0.50
+  fiqa: 0.15
+  quora: 0.15
+  nfcorpus: 0.08
+  scifact: 0.07
+  arguana: 0.05
+resume_checkpoint: artifacts/query_distill_runs_5ep_fresh/stage-b-query-distill-dataablate-msmarco-bm25-30-100-mse-only-5ep-fresh/checkpoints/checkpoint_step_2750.pt
+device: cuda:0
+
+2. Код обучения:
+```
 #!/usr/bin/env python3
 """Train OSCAR+projector with explicit query/document BGE teacher targets."""
 
@@ -1042,3 +1096,375 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from typing import Optional, Literal
+from peft import LoraConfig, get_peft_model
+
+
+PoolerType = Literal["mean", "first", "last", "max", "mean_max", "first_last", "flatten"]
+
+
+class BaseMEMProjector(nn.Module):
+    """Базовый класс для проектора MEM-токенов OSCAR в эмбеддинги для поиска."""
+
+    def __init__(
+        self,
+        hidden_dim: int = 2048,
+        embed_dim: int = 768,
+        pooler: PoolerType = "mean",
+    ):
+        super().__init__()
+        self.hidden_dim = hidden_dim
+        self.embed_dim = embed_dim
+        self.pooler = pooler
+
+    def pool(self, mem_hiddens: torch.Tensor) -> torch.Tensor:
+        """Pool MEM-токены в один вектор.
+
+        Args:
+            mem_hiddens: [batch, num_mem_tokens, hidden_dim]
+
+        Returns:
+            [batch, hidden_dim] или [batch, hidden_dim*2] для mean_max/first_last,
+            или [batch, num_mem_tokens * hidden_dim] для flatten
+        """
+        if self.pooler == "mean":
+            return mem_hiddens.mean(dim=1)
+        elif self.pooler == "first":
+            return mem_hiddens[:, 0, :]
+        elif self.pooler == "last":
+            return mem_hiddens[:, -1, :]
+        elif self.pooler == "max":
+            return mem_hiddens.max(dim=1).values
+        elif self.pooler == "mean_max":
+            mean_emb = mem_hiddens.mean(dim=1)
+            max_emb = mem_hiddens.max(dim=1).values
+            return torch.cat([mean_emb, max_emb], dim=-1)
+        elif self.pooler == "first_last":
+            return torch.cat([mem_hiddens[:, 0, :], mem_hiddens[:, -1, :]], dim=-1)
+        elif self.pooler == "flatten":
+            return mem_hiddens.view(mem_hiddens.size(0), -1)
+        else:
+            raise ValueError(f"Unknown pooler: {self.pooler}")
+
+    @property
+    def output_dim(self) -> int:
+        if self.pooler in {"mean_max", "first_last"}:
+            return self.hidden_dim * 2
+        elif self.pooler == "flatten":
+            return self.hidden_dim * 8  # 8 mem tokens
+        return self.hidden_dim
+
+    def forward(self, mem_hiddens: torch.Tensor) -> torch.Tensor:
+        """Преобразовать MEM-токены в эмбеддинги для поиска.
+
+        Args:
+            mem_hiddens: [batch, num_mem_tokens, hidden_dim]
+
+        Returns:
+            [batch, embed_dim] нормализованные эмбеддинги
+        """
+        raise NotImplementedError
+
+
+class MEMProjector(BaseMEMProjector):
+    """MLP проектор для преобразования MEM-токенов в search-friendly эмбеддинги.
+
+    Вариант A: Только MLP проектор, OSCAR заморожен.
+    """
+
+    def __init__(
+        self,
+        hidden_dim: int = 2048,
+        embed_dim: int = 768,
+        pooler: PoolerType = "mean",
+        num_layers: int = 2,
+        dropout: float = 0.1,
+        projector_hidden_dim: Optional[int] = None,
+    ):
+        super().__init__(hidden_dim, embed_dim, pooler)
+
+        if projector_hidden_dim is None:
+            projector_hidden_dim = hidden_dim
+
+        # Calculate actual input dimension based on pooler
+        if pooler in {"mean_max", "first_last"}:
+            actual_input_dim = hidden_dim * 2
+        elif pooler == "flatten":
+            actual_input_dim = hidden_dim * 8  # 8 mem tokens
+        else:
+            actual_input_dim = hidden_dim
+
+        layers = []
+        in_dim = actual_input_dim
+
+        for i in range(num_layers):
+            if num_layers == 1:
+                out_dim = embed_dim
+            elif i == 0:
+                out_dim = projector_hidden_dim
+            elif i == num_layers - 1:
+                out_dim = embed_dim
+            else:
+                out_dim = projector_hidden_dim
+            layers.append(nn.Linear(in_dim, out_dim))
+            if i < num_layers - 1:
+                layers.append(nn.ReLU())
+                layers.append(nn.Dropout(dropout))
+            in_dim = out_dim
+
+        if num_layers > 1:
+            layers.append(nn.LayerNorm(embed_dim))
+
+        self.mlp = nn.Sequential(*layers)
+
+    def forward(self, mem_hiddens: torch.Tensor) -> torch.Tensor:
+        pooled = self.pool(mem_hiddens)
+        embeddings = self.mlp(pooled)
+        embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=-1)
+        return embeddings
+
+
+class LoRAMEMProjector(BaseMEMProjector):
+    """LoRA проектор - MLP с LoRA адаптером.
+
+    Вариант B: MLP + LoRA адаптер, OSCAR заморожен.
+    """
+
+    def __init__(
+        self,
+        hidden_dim: int = 2048,
+        embed_dim: int = 768,
+        pooler: PoolerType = "mean",
+        lora_r: int = 8,
+        lora_alpha: int = 16,
+        lora_dropout: float = 0.1,
+    ):
+        super().__init__(hidden_dim, embed_dim, pooler)
+
+        # Calculate actual input dimension based on pooler
+        if pooler in {"mean_max", "first_last"}:
+            actual_input_dim = hidden_dim * 2
+        elif pooler == "flatten":
+            actual_input_dim = hidden_dim * 8  # 8 mem tokens
+        else:
+            actual_input_dim = hidden_dim
+
+        self.mlp = nn.Sequential(
+            nn.Linear(actual_input_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(lora_dropout),
+            nn.Linear(hidden_dim, embed_dim),
+            nn.LayerNorm(embed_dim),
+        )
+
+        lora_config = LoraConfig(
+            r=lora_r,
+            lora_alpha=lora_alpha,
+            target_modules=["0", "2"],
+            lora_dropout=lora_dropout,
+            bias="none",
+            task_type="FEATURE_EXTRACTION",
+        )
+        self.mlp = get_peft_model(self.mlp, lora_config)
+
+    def forward(self, mem_hiddens: torch.Tensor) -> torch.Tensor:
+        pooled = self.pool(mem_hiddens)
+        embeddings = self.mlp(pooled)
+        embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=-1)
+        return embeddings
+
+    def print_trainable_parameters(self):
+        """Вывести количество обучаемых параметров."""
+        trainable_params = 0
+        all_params = 0
+        for _, param in self.named_parameters():
+            all_params += param.numel()
+            if param.requires_grad:
+                trainable_params += param.numel()
+        print(f"Trainable params: {trainable_params:,} | All params: {all_params:,} | Ratio: {trainable_params / all_params:.2%}")
+
+
+class FullFineTuneProjector(BaseMEMProjector):
+    """Полное дообучение: OSCAR с LoRA + проектор.
+
+    Вариант C: OSCAR (с LoRA) + проектор, все обучается.
+    """
+
+    def __init__(
+        self,
+        oscar_model: nn.Module,
+        embed_dim: int = 768,
+        pooler: PoolerType = "mean",
+        apply_lora: bool = True,
+        oscar_lora_r: int = 8,
+        oscar_lora_alpha: int = 16,
+        oscar_lora_dropout: float = 0.1,
+        projector_num_layers: int = 2,
+        projector_dropout: float = 0.1,
+    ):
+        hidden_dim = oscar_model.config.hidden_size
+
+        super().__init__(hidden_dim, embed_dim, pooler)
+        self.oscar_model = oscar_model
+        self.projector_num_layers = projector_num_layers
+
+        if apply_lora:
+            lora_config = LoraConfig(
+                r=oscar_lora_r,
+                lora_alpha=oscar_lora_alpha,
+                target_modules=["q_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+                lora_dropout=oscar_lora_dropout,
+                bias="none",
+                task_type="FEATURE_EXTRACTION",
+            )
+            self.oscar_model = get_peft_model(self.oscar_model, lora_config)
+
+        # Calculate actual input dimension based on pooler
+        if pooler == "mean_max":
+            actual_input_dim = hidden_dim * 2
+        elif pooler == "flatten":
+            actual_input_dim = hidden_dim * 8  # 8 mem tokens
+        else:
+            actual_input_dim = hidden_dim
+        in_dim = actual_input_dim
+
+        layers = []
+        for i in range(projector_num_layers):
+            out_dim = embed_dim if i == projector_num_layers - 1 else hidden_dim
+            layers.append(nn.Linear(in_dim, out_dim))
+            if i < projector_num_layers - 1:
+                layers.append(nn.ReLU())
+                layers.append(nn.Dropout(projector_dropout))
+            in_dim = out_dim
+
+        if projector_num_layers > 1:
+            layers.append(nn.LayerNorm(embed_dim))
+
+        self.projector = nn.Sequential(*layers)
+
+    def get_compressed_embeddings(self, documents: list[str]) -> torch.Tensor:
+        """Получить MEM-эмбеддинги от OSCAR.
+
+        Args:
+            documents: список документов
+
+        Returns:
+            [batch, num_mem_tokens, hidden_dim]
+        """
+        # During training we need gradients through OSCAR (LoRA adapters).
+        if self.training:
+            return self.oscar_model.compress_documents(documents=documents)
+        with torch.inference_mode():
+            return self.oscar_model.compress_documents(documents=documents)
+
+    def forward(self, mem_hiddens: torch.Tensor) -> torch.Tensor:
+        pooled = self.pool(mem_hiddens)
+        embeddings = self.projector(pooled)
+        embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=-1)
+        return embeddings
+
+    def forward_full(self, documents: list[str]) -> torch.Tensor:
+        """Полный forward: документы -> эмбеддинги для поиска.
+
+        Args:
+            documents: список документов
+
+        Returns:
+            [batch, embed_dim] нормализованные эмбеддинги
+        """
+        mem_hiddens = self.get_compressed_embeddings(documents)
+        return self.forward(mem_hiddens)
+
+    def print_trainable_parameters(self):
+        """Вывести количество обучаемых параметров."""
+        trainable_params = 0
+        all_params = 0
+        for _, param in self.named_parameters():
+            all_params += param.numel()
+            if param.requires_grad:
+                trainable_params += param.numel()
+        print(f"Trainable params: {trainable_params:,} | All params: {all_params:,} | Ratio: {trainable_params / all_params:.2%}")
+
+
+class DistillationProjector(nn.Module):
+    """MLP проектор для дистилляции из SFR-Embedding-Mistral.
+    
+    Архитектура:
+        - Input: flatten(8 * hidden_dim) = 28672 (для OSCAR flatten pooler)
+        - Hidden: hidden_dim (например, 8192)
+        - Output: embed_dim (4096 для SFR-Mistral)
+        - Активация: GELU
+        - Нормализация: LayerNorm
+    """
+    
+    def __init__(
+        self,
+        oscar_hidden_dim: int = 3584,
+        embed_dim: int = 4096,
+        hidden_dim: int = 8192,
+        num_layers: int = 2,
+        use_normalize: bool = True,
+    ):
+        super().__init__()
+        
+        self.oscar_hidden_dim = oscar_hidden_dim
+        self.embed_dim = embed_dim
+        self.hidden_dim = hidden_dim
+        self.num_layers = num_layers
+        self.use_normalize = use_normalize
+        
+        # Input: 8 * oscar_hidden_dim = 28672 (для flatten pooler)
+        input_dim = 8 * oscar_hidden_dim
+        
+        layers = []
+        in_dim = input_dim
+        for i in range(num_layers):
+            out_dim = embed_dim if i == num_layers - 1 else hidden_dim
+            layers.append(nn.Linear(in_dim, out_dim))
+            if i < num_layers - 1:
+                layers.append(nn.LayerNorm(out_dim))
+                layers.append(nn.GELU())
+            in_dim = out_dim
+        self.mlp = nn.Sequential(*layers)
+    
+    def forward(self, mem_hiddens: torch.Tensor) -> torch.Tensor:
+        """Forward pass."""
+        if mem_hiddens.dim() == 3:
+            mem_hiddens = mem_hiddens.view(mem_hiddens.size(0), -1)
+        
+        embeddings = self.mlp(mem_hiddens)
+        
+        # Normalize output
+        embeddings = F.normalize(embeddings, p=2, dim=-1)
+        
+        return embeddings
+
+3. Историю последнего запуска обучения:
+| Step | Epoch | train loss | probe ndcg@10 | iq_rank_median | interquery_ndcg@10 | probe gap | val gap | Комментарий                                        |
+| ---- | ----- | ---------- | ------------- | -------------- | ------------------ | --------- | ------- | -------------------------------------------------- |
+| 2750 | —     | 0.00135    | 0.439         | 180            | 0.180              | +0.033    | 0.021   | Точка старта resume, early stopping сработал здесь |
+| 3000 | 1     | 0.00136    | 0.477         | 154            | 0.253              | +0.030    | 0.020   | Первый рекорд после resume, +0.038 ndcg            |
+| 3250 | 1     | 0.00133    | 0.488         | 154            | 0.258              | +0.030    | 0.021   | Второй рекорд подряд                               |
+| 3500 | 1     | 0.00131    | 0.492         | 106            | 0.248              | +0.037    | 0.022   | iq_rank прорвал 110, gap рекорд                    |
+| 3750 | 1     | 0.00130    | 0.558         | 90             | 0.290              | +0.037    | 0.022   | 🔥 Большой скачок +0.066, gap_batch_min впервые >0 |
+| 4000 | 1     | 0.00129    | 0.540         | 104            | 0.326              | +0.037    | 0.023   | Откат ndcg, но iq_ndcg рекорд                      |
+| 4250 | 1     | 0.00128    | 0.568         | 79             | 0.326              | +0.042    | 0.023   | Рекорд ndcg и gap, iq_rank_median пробил 80        |
+| 4500 | 2     | 0.00127    | 0.550         | 79             | 0.314              | +0.041    | 0.024   | Начало epoch 2, лёгкий откат                       |
+| 4750 | 2     | 0.00126    | 0.575         | 67             | 0.338              | +0.040    | 0.024   | Рекорд ndcg, iq_rank <70                           |
+| 5000 | 2     | 0.00126    | 0.576         | 55             | 0.350              | +0.040    | 0.024   | iq_rank пробил 60, rank_median=2.0 впервые         |
+| 5250 | 2     | 0.00125    | 0.598         | 54             | 0.379              | +0.043    | 0.024   | 🔥 Рекорд ndcg 0.598, iq_ndcg рекорд               |
+| 5500 | 2     | 0.00124    | 0.581         | 55             | 0.335              | +0.043    | 0.025   | Откат, но gap стабилен                             |
+| 5750 | 2     | 0.00124    | 0.571         | 71             | 0.326              | +0.046    | 0.025   | gap рекорд, iq_rank откатился                      |
+| 6000 | 2     | 0.00123    | 0.577         | 79             | 0.353              | +0.044    | 0.025   | Восстановление, gap_batch_min рекорд 0.0021        |
+| 6250 | 3     | 0.00123    | 0.585         | 65             | 0.366              | +0.049    | 0.025   | 🔥 Epoch 3 старт, gap рекорд 0.049                 |
+| 6500 | 3     | 0.00123    | 0.574         | 78             | 0.338              | +0.046    | 0.025   | Откат                                              |
+| 6750 | 3     | 0.00122    | 0.566         | 54             | 0.343              | +0.048    | 0.025   | iq_rank рекорд, ndcg вниз                          |
+| 7000 | 3     | 0.00122    | 0.569         | 54             | 0.338              | +0.046    | 0.026   | Плато по iq_rank                                   |
+| 7250 | 3     | 0.00122    | 0.557         | 80             | 0.323              | +0.047    | 0.026   | ⚠️ ndcg снижается 3-й шаг подряд, плато            |
+
+
+Составь план -- как обучить принципиально лучший проектор из эмбеддингов OSCAR в retrieval эмбеддинги. 
