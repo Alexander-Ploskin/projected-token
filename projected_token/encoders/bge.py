@@ -17,9 +17,13 @@ class BGEEncoder(Encoder):
         device: str = "cuda:0",
         trust_remote_code: bool = True,
         normalize_embeddings: bool = False,
+        query_prefix: str = "Represent this sentence for searching relevant passages: ",
+        document_prefix: str = "",
     ) -> None:
         self._device = torch.device(device)
         self._normalize_embeddings = normalize_embeddings
+        self._query_prefix = str(query_prefix)
+        self._document_prefix = str(document_prefix)
         self._model = SentenceTransformer(
             model_name_or_path,
             device=device,
@@ -33,11 +37,13 @@ class BGEEncoder(Encoder):
         questions: Optional[List[str]] = None,
     ) -> torch.Tensor:
         texts = questions if questions is not None else documents
+        is_query = questions is not None
         valid_indices = [idx for idx, text in enumerate(texts) if isinstance(text, str) and text.strip()]
         if not valid_indices:
             return torch.zeros(len(texts), self._latent_dim, device=self._device)
 
-        valid_texts = [texts[idx] for idx in valid_indices]
+        prefix = self._query_prefix if is_query else self._document_prefix
+        valid_texts = [prefix + texts[idx] for idx in valid_indices]
         embeddings = self._model.encode(
             valid_texts,
             convert_to_tensor=True,

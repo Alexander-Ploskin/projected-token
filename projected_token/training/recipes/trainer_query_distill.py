@@ -10,6 +10,7 @@ import json
 import math
 import os
 import re
+import time
 from pathlib import Path
 from typing import Any, Sequence, Union
 
@@ -26,7 +27,8 @@ from transformers import AutoModel
 
 from projected_token.artifacts import write_config_lock
 from projected_token.config import load_yaml
-from projected_token.encoders.projector import MEMProjector
+from projected_token.encoders.projector import MEMProjector, DualHeadMEMProjector, TokenAwareDualProjector
+from projected_token.retrieval.beir import evaluate_beir
 from projected_token.oscar_runtime import disable_transformers_allocator_warmup, configure_oscar_component_devices
 
 
@@ -62,9 +64,11 @@ class QueryDocH5Dataset(Dataset):
         self.files = [h5py.File(p, "r") for p in self.h5_paths]
         self.file_sources = []
         self.index_map: list[tuple[int, int]] = []
+        self.file_candidate_mode: list[bool] = []
         for fi, h5 in enumerate(self.files):
             source_name = self._infer_file_source(Path(self.h5_paths[fi]))
             self.file_sources.append(source_name)
+            self.file_candidate_mode.append("candidate_docs" in h5 and "teacher_scores" in h5)
             total = int(h5["query_embeddings"].shape[0])
             val_size = int(total * val_split)
             if val_split > 0 and total > 1:
@@ -88,6 +92,24 @@ class QueryDocH5Dataset(Dataset):
     def __getitem__(self, idx: int) -> dict[str, Any]:
         fi, row = self.index_map[idx]
         h5 = self.files[fi]
+        if self.file_candidate_mode[fi]:
+            candidate_docs = [_decode_text(value) for value in h5["candidate_docs"][row]]
+            payload = {
+                "query": _decode_text(h5["queries"][row]),
+                "candidate_docs": candidate_docs,
+                "teacher_scores": torch.tensor(h5["teacher_scores"][row], dtype=torch.float32),
+                "query_target": torch.tensor(h5["query_embeddings"][row], dtype=torch.float32),
+                "source": self.file_sources[fi],
+            }
+            if "candidate_embeddings" in h5:
+                payload["candidate_targets"] = torch.tensor(h5["candidate_embeddings"][row], dtype=torch.float32)
+            if "relevance" in h5:
+                payload["relevance"] = torch.tensor(h5["relevance"][row], dtype=torch.float32)
+            elif "labels" in h5:
+                payload["relevance"] = torch.tensor(h5["labels"][row], dtype=torch.float32)
+            if "candidate_source" in h5:
+                payload["candidate_source"] = [_decode_text(value) for value in h5["candidate_source"][row]]
+            return payload
         return {
             "query": _decode_text(h5["queries"][row]),
             "positive": _decode_text(h5["positive_docs"][row]),
@@ -104,6 +126,21 @@ class QueryDocH5Dataset(Dataset):
 
 
 def collate_query_doc(batch: list[dict[str, Any]]) -> dict[str, Any]:
+    if batch and "candidate_docs" in batch[0]:
+        out: dict[str, Any] = {
+            "queries": [x["query"] for x in batch],
+            "candidate_docs": [x["candidate_docs"] for x in batch],
+            "teacher_scores": torch.stack([x["teacher_scores"] for x in batch]),
+            "query_targets": torch.stack([x["query_target"] for x in batch]),
+            "sources": [x["source"] for x in batch],
+        }
+        if "candidate_targets" in batch[0]:
+            out["candidate_targets"] = torch.stack([x["candidate_targets"] for x in batch])
+        if "relevance" in batch[0]:
+            out["relevance"] = torch.stack([x["relevance"] for x in batch])
+        if "candidate_source" in batch[0]:
+            out["candidate_sources"] = [x["candidate_source"] for x in batch]
+        return out
     return {
         "queries": [x["query"] for x in batch],
         "positives": [x["positive"] for x in batch],
@@ -123,9 +160,24 @@ class QueryDistillationTrainer:
         teacher_embeddings_path: Union[str, Sequence[str]],
         embed_dim: int = 768,
         pooler: str = "flatten",
+        projector_type: str = "mem",
         num_layers: int = 2,
         dropout: float = 0.0,
         projector_hidden_dim: int = 8192,
+        mem_tokens: int = 8,
+        attn_dim: int = 1536,
+        attn_layers: int = 2,
+        attn_heads: int = 8,
+        stage1_steps: int = 0,
+        stage1_query_mse_weight: float = 0.5,
+        stage1_doc_mse_weight: float = 0.5,
+        stage1_negative_mse_weight: float = 0.1,
+        stage2_query_mse_weight: float = 0.2,
+        stage2_doc_mse_weight: float = 0.2,
+        stage2_negative_mse_weight: float = 0.0,
+        stage2_teacher_listwise_kl_weight: float = 0.6,
+        stage2_ranking_weight: float = 0.1,
+        stage2_infonce_weight: float = 0.2,
         batch_size: int = 32,
         gradient_accumulation_steps: int = 1,
         lr: float = 5e-5,
@@ -146,6 +198,10 @@ class QueryDistillationTrainer:
         beir_probe_samples_per_dataset: int | None = None,
         beir_probe_negatives: int = 20,
         beir_probe_batch_size: int = 8,
+        beir_mini_eval_config: str | None = None,
+        beir_mini_eval_every: int = 0,
+        beir_full_eval_config: str | None = None,
+        beir_full_eval_every: int = 0,
         selection_metric: str = "beir_proxy_ndcg@10",
         dataset_sampling_weights: dict[str, float] | None = None,
         resume_checkpoint: str | None = None,
@@ -156,6 +212,17 @@ class QueryDistillationTrainer:
         self.device = torch.device(device)
         self.oscar_model_name = oscar_model_name
         self.batch_size = int(batch_size)
+        self.projector_type = str(projector_type)
+        self.stage1_steps = max(0, int(stage1_steps))
+        self.stage1_query_mse_weight = float(stage1_query_mse_weight)
+        self.stage1_doc_mse_weight = float(stage1_doc_mse_weight)
+        self.stage1_negative_mse_weight = float(stage1_negative_mse_weight)
+        self.stage2_query_mse_weight = float(stage2_query_mse_weight)
+        self.stage2_doc_mse_weight = float(stage2_doc_mse_weight)
+        self.stage2_negative_mse_weight = float(stage2_negative_mse_weight)
+        self.stage2_teacher_listwise_kl_weight = float(stage2_teacher_listwise_kl_weight)
+        self.stage2_ranking_weight = float(stage2_ranking_weight)
+        self.stage2_infonce_weight = float(stage2_infonce_weight)
         self.gradient_accumulation_steps = max(1, int(gradient_accumulation_steps))
         self.base_lr = float(lr)
         self.min_lr = float(min_lr)
@@ -177,6 +244,10 @@ class QueryDistillationTrainer:
         )
         self.beir_probe_negatives = int(beir_probe_negatives)
         self.beir_probe_batch_size = int(beir_probe_batch_size)
+        self.beir_mini_eval_config = str(beir_mini_eval_config) if beir_mini_eval_config else None
+        self.beir_mini_eval_every = int(beir_mini_eval_every)
+        self.beir_full_eval_config = str(beir_full_eval_config) if beir_full_eval_config else None
+        self.beir_full_eval_every = int(beir_full_eval_every)
         self.selection_metric = str(selection_metric)
         self.dataset_sampling_weights = {str(k): float(v) for k, v in (dataset_sampling_weights or {}).items()}
         self.resume_checkpoint = Path(resume_checkpoint) if resume_checkpoint else None
@@ -230,14 +301,38 @@ class QueryDistillationTrainer:
             num_workers=2,
         )
 
-        self.projector = MEMProjector(
-            hidden_dim=hidden_size,
-            embed_dim=embed_dim,
-            pooler=pooler,
-            num_layers=num_layers,
-            dropout=dropout,
-            projector_hidden_dim=projector_hidden_dim,
-        ).to(device=self.device, dtype=torch.bfloat16)
+        if self.projector_type == "token_dual":
+            self.projector = TokenAwareDualProjector(
+                hidden_dim=hidden_size,
+                embed_dim=embed_dim,
+                num_mem_tokens=mem_tokens,
+                attn_dim=attn_dim,
+                num_attn_layers=attn_layers,
+                num_heads=attn_heads,
+                dropout=dropout,
+                projector_hidden_dim=projector_hidden_dim,
+                head_layers=max(1, int(num_layers)),
+            ).to(device=self.device, dtype=torch.bfloat16)
+        elif self.projector_type == "dual_head":
+            self.projector = DualHeadMEMProjector(
+                hidden_dim=hidden_size,
+                embed_dim=embed_dim,
+                pooler=pooler,
+                trunk_hidden_dim=projector_hidden_dim,
+                head_hidden_dim=max(embed_dim, projector_hidden_dim // 2),
+                trunk_layers=1,
+                head_layers=max(1, int(num_layers)),
+                dropout=dropout,
+            ).to(device=self.device, dtype=torch.bfloat16)
+        else:
+            self.projector = MEMProjector(
+                hidden_dim=hidden_size,
+                embed_dim=embed_dim,
+                pooler=pooler,
+                num_layers=num_layers,
+                dropout=dropout,
+                projector_hidden_dim=projector_hidden_dim,
+            ).to(device=self.device, dtype=torch.bfloat16)
         print("Query distillation projector architecture:")
         print(self.projector)
         print(f"Projector parameters: {sum(p.numel() for p in self.projector.parameters()):,}")
@@ -250,12 +345,30 @@ class QueryDistillationTrainer:
             "projector_hidden_dim": projector_hidden_dim,
             "num_layers": num_layers,
             "dropout": dropout,
+            "mem_tokens": mem_tokens,
+            "attn_dim": attn_dim,
+            "attn_layers": attn_layers,
+            "attn_heads": attn_heads,
             "gradient_accumulation_steps": self.gradient_accumulation_steps,
             "selection_metric": self.selection_metric,
-            "projector_type": "mem",
+            "projector_type": self.projector_type,
             "training_objective": "query_doc_bge_distill",
             "dataset_sampling_weights": self.dataset_sampling_weights,
             "resume_checkpoint": str(self.resume_checkpoint) if self.resume_checkpoint else None,
+            "stage1_steps": self.stage1_steps,
+            "stage1_query_mse_weight": self.stage1_query_mse_weight,
+            "stage1_doc_mse_weight": self.stage1_doc_mse_weight,
+            "stage1_negative_mse_weight": self.stage1_negative_mse_weight,
+            "stage2_query_mse_weight": self.stage2_query_mse_weight,
+            "stage2_doc_mse_weight": self.stage2_doc_mse_weight,
+            "stage2_negative_mse_weight": self.stage2_negative_mse_weight,
+            "stage2_teacher_listwise_kl_weight": self.stage2_teacher_listwise_kl_weight,
+            "stage2_ranking_weight": self.stage2_ranking_weight,
+            "stage2_infonce_weight": self.stage2_infonce_weight,
+            "beir_mini_eval_config": self.beir_mini_eval_config,
+            "beir_mini_eval_every": self.beir_mini_eval_every,
+            "beir_full_eval_config": self.beir_full_eval_config,
+            "beir_full_eval_every": self.beir_full_eval_every,
         }
         self._beir_probe_cases = self._load_beir_probe_cases()
         self.load_checkpoint()
@@ -369,15 +482,143 @@ class QueryDistillationTrainer:
             replacement=True,
         )
 
-    def encode_texts(self, texts: list[str]) -> torch.Tensor:
+    def encode_texts(self, texts: list[str], mode: str = "doc") -> torch.Tensor:
         with torch.no_grad():
             mem_embeddings = self.oscar_model.compress_documents(documents=texts)
+        if self.projector_type in {"token_dual", "dual_head"}:
+            return self.projector(mem_embeddings, mode=mode)
         return self.projector(mem_embeddings)
 
+    def encode_candidate_docs(self, candidate_docs: list[list[str]]) -> torch.Tensor:
+        if not candidate_docs:
+            return torch.empty(0, 0, device=self.device)
+        batch_size = len(candidate_docs)
+        num_candidates = len(candidate_docs[0])
+        flat_docs = [doc for docs in candidate_docs for doc in docs]
+        flat_emb = F.normalize(self.encode_texts(flat_docs, mode="doc").float(), dim=-1)
+        return flat_emb.view(batch_size, num_candidates, -1)
+
+    def _teacher_listwise_kl(
+        self,
+        q: torch.Tensor,
+        p: torch.Tensor,
+        n: torch.Tensor,
+        q_t: torch.Tensor,
+        p_t: torch.Tensor,
+        n_t: torch.Tensor,
+    ) -> torch.Tensor:
+        student_logits = torch.cat(
+            [
+                torch.sum(q * p, dim=-1, keepdim=True),
+                torch.sum(q * n, dim=-1, keepdim=True),
+                torch.matmul(q, p.T),
+            ],
+            dim=1,
+        ) / max(self.temperature, 1e-6)
+        teacher_logits = torch.cat(
+            [
+                torch.sum(q_t * p_t, dim=-1, keepdim=True),
+                torch.sum(q_t * n_t, dim=-1, keepdim=True),
+                torch.matmul(q_t, p_t.T),
+            ],
+            dim=1,
+        ) / max(self.temperature, 1e-6)
+        teacher_probs = torch.softmax(teacher_logits, dim=1)
+        student_log_probs = torch.log_softmax(student_logits, dim=1)
+        return torch.sum(teacher_probs * (torch.log(teacher_probs + 1e-8) - student_log_probs), dim=1).mean()
+
+    def _compute_candidate_loss(self, batch: dict[str, Any]) -> tuple[torch.Tensor, dict[str, float]]:
+        q = F.normalize(self.encode_texts(batch["queries"], mode="query").float(), dim=-1)
+        cand = self.encode_candidate_docs(batch["candidate_docs"])
+        q_t = F.normalize(batch["query_targets"].to(self.device).float(), dim=-1)
+        teacher_scores = batch["teacher_scores"].to(self.device).float()
+        student_scores = torch.einsum("bd,bkd->bk", q, cand)
+        student_logits = student_scores / max(self.temperature, 1e-6)
+        teacher_logits = teacher_scores / max(self.temperature, 1e-6)
+        teacher_probs = torch.softmax(teacher_logits, dim=-1)
+        student_log_probs = torch.log_softmax(student_logits, dim=-1)
+        teacher_score_kl = torch.sum(
+            teacher_probs * (torch.log(teacher_probs + 1e-8) - student_log_probs),
+            dim=-1,
+        ).mean()
+
+        labels = torch.argmax(teacher_scores, dim=-1)
+        infonce_loss = F.cross_entropy(student_logits, labels)
+        positive_scores = student_scores.gather(1, labels.unsqueeze(1)).squeeze(1)
+        negative_mask = torch.ones_like(student_scores, dtype=torch.bool)
+        negative_mask.scatter_(1, labels.unsqueeze(1), False)
+        hardest_negative = student_scores.masked_fill(~negative_mask, -1e4).max(dim=-1).values
+        hard_negative_margin = torch.relu(self.margin - positive_scores + hardest_negative).mean()
+
+        if "candidate_targets" in batch:
+            cand_t = F.normalize(batch["candidate_targets"].to(self.device).float(), dim=-1)
+            target_doc = cand_t.gather(
+                1,
+                labels.view(-1, 1, 1).expand(-1, 1, cand_t.size(-1)),
+            ).squeeze(1)
+            q_mse = F.mse_loss(q, q_t)
+            doc_mse = F.mse_loss(cand.gather(1, labels.view(-1, 1, 1).expand(-1, 1, cand.size(-1))).squeeze(1), target_doc)
+            mse_anchor = q_mse + doc_mse
+        else:
+            q_mse = F.mse_loss(q, q_t)
+            doc_mse = torch.zeros((), device=self.device)
+            mse_anchor = q_mse
+
+        current_step = int(getattr(self, "_current_step", 0))
+        if self.stage1_steps > 0 and current_step < self.stage1_steps:
+            total = 0.4 * q_mse + 0.2 * F.relu(1.0 - positive_scores).mean() + 0.4 * teacher_score_kl
+            loss_stage = "stage1"
+        else:
+            total = (
+                self.stage2_teacher_listwise_kl_weight * teacher_score_kl
+                + self.stage2_infonce_weight * infonce_loss
+                + self.stage2_ranking_weight * hard_negative_margin
+                + max(self.stage2_query_mse_weight, 0.0) * mse_anchor
+            )
+            loss_stage = "stage2"
+
+        student_rank = torch.argsort(torch.argsort(student_scores, dim=-1, descending=True), dim=-1)
+        teacher_rank = torch.argsort(torch.argsort(teacher_scores, dim=-1, descending=True), dim=-1)
+        centered_student = student_rank.float() - student_rank.float().mean(dim=-1, keepdim=True)
+        centered_teacher = teacher_rank.float() - teacher_rank.float().mean(dim=-1, keepdim=True)
+        spearman = (
+            (centered_student * centered_teacher).sum(dim=-1)
+            / (
+                torch.linalg.norm(centered_student, dim=-1)
+                * torch.linalg.norm(centered_teacher, dim=-1)
+            ).clamp(min=1e-6)
+        ).mean()
+        positive_rank = student_rank.gather(1, labels.unsqueeze(1)).float().mean() + 1.0
+        metrics = {
+            "query_mse": float(q_mse.item()),
+            "positive_mse": float(doc_mse.item()),
+            "negative_mse": 0.0,
+            "ranking_loss": float(hard_negative_margin.item()),
+            "infonce_loss": float(infonce_loss.item()),
+            "teacher_listwise_kl": float(teacher_score_kl.item()),
+            "loss_stage": 1.0 if loss_stage == "stage1" else 2.0,
+            "pos_sim": float(positive_scores.mean().item()),
+            "neg_sim": float(hardest_negative.mean().item()),
+            "gap": float((positive_scores - hardest_negative).mean().item()),
+            "pos_sim_std": float(positive_scores.std(unbiased=False).item()),
+            "neg_sim_std": float(hardest_negative.std(unbiased=False).item()),
+            "gap_std": float((positive_scores - hardest_negative).std(unbiased=False).item()),
+            "gap_min": float((positive_scores - hardest_negative).min().item()),
+            "gap_max": float((positive_scores - hardest_negative).max().item()),
+            "ranking_active_frac": float((self.margin - positive_scores + hardest_negative > 0).float().mean().item()),
+            "teacher_top1_agreement": float((torch.argmax(student_scores, dim=-1) == labels).float().mean().item()),
+            "teacher_student_spearman": float(spearman.item()),
+            "positive_rank_in_candidates": float(positive_rank.item()),
+            "embedding_uniformity": float(torch.pdist(q, p=2).pow(2).mul(-2.0).exp().mean().log().item()) if q.size(0) > 1 else 0.0,
+        }
+        return total, metrics
+
     def compute_loss(self, batch: dict[str, Any]) -> tuple[torch.Tensor, dict[str, float]]:
-        q = F.normalize(self.encode_texts(batch["queries"]).float(), dim=-1)
-        p = F.normalize(self.encode_texts(batch["positives"]).float(), dim=-1)
-        n = F.normalize(self.encode_texts(batch["negatives"]).float(), dim=-1)
+        if "candidate_docs" in batch:
+            return self._compute_candidate_loss(batch)
+        q = F.normalize(self.encode_texts(batch["queries"], mode="query").float(), dim=-1)
+        p = F.normalize(self.encode_texts(batch["positives"], mode="doc").float(), dim=-1)
+        n = F.normalize(self.encode_texts(batch["negatives"], mode="doc").float(), dim=-1)
         q_t = F.normalize(batch["query_targets"].to(self.device).float(), dim=-1)
         p_t = F.normalize(batch["positive_targets"].to(self.device).float(), dim=-1)
         n_t = F.normalize(batch["negative_targets"].to(self.device).float(), dim=-1)
@@ -392,19 +633,33 @@ class QueryDistillationTrainer:
         logits = torch.matmul(q, p.T) / max(self.temperature, 1e-6)
         labels = torch.arange(q.size(0), device=q.device)
         infonce_loss = F.cross_entropy(logits, labels)
-        total = (
-            self.query_mse_weight * q_mse
-            + self.doc_mse_weight * p_mse
-            + self.negative_mse_weight * n_mse
-            + self.ranking_weight * ranking_loss
-            + self.infonce_weight * infonce_loss
-        )
+        teacher_listwise_kl = self._teacher_listwise_kl(q, p, n, q_t, p_t, n_t)
+        current_step = int(getattr(self, "_current_step", 0))
+        if self.stage1_steps > 0 and current_step < self.stage1_steps:
+            total = (
+                self.stage1_query_mse_weight * q_mse
+                + self.stage1_doc_mse_weight * p_mse
+                + self.stage1_negative_mse_weight * n_mse
+            )
+            loss_stage = "stage1"
+        else:
+            total = (
+                self.stage2_query_mse_weight * q_mse
+                + self.stage2_doc_mse_weight * p_mse
+                + self.stage2_negative_mse_weight * n_mse
+                + self.stage2_teacher_listwise_kl_weight * teacher_listwise_kl
+                + self.stage2_ranking_weight * ranking_loss
+                + self.stage2_infonce_weight * infonce_loss
+            )
+            loss_stage = "stage2"
         metrics = {
             "query_mse": float(q_mse.item()),
             "positive_mse": float(p_mse.item()),
             "negative_mse": float(n_mse.item()),
             "ranking_loss": float(ranking_loss.item()),
             "infonce_loss": float(infonce_loss.item()),
+            "teacher_listwise_kl": float(teacher_listwise_kl.item()),
+            "loss_stage": 1.0 if loss_stage == "stage1" else 2.0,
             "pos_sim": float(pos_sim.mean().item()),
             "neg_sim": float(neg_sim.mean().item()),
             "gap": float(gap.mean().item()),
@@ -414,10 +669,34 @@ class QueryDistillationTrainer:
             "gap_min": float(gap.min().item()),
             "gap_max": float(gap.max().item()),
             "ranking_active_frac": float((self.margin - pos_sim + neg_sim > 0).float().mean().item()),
+            "teacher_top1_agreement": float(
+                (
+                    torch.argmax(
+                        torch.cat(
+                            [
+                                torch.sum(q * p, dim=-1, keepdim=True),
+                                torch.sum(q * n, dim=-1, keepdim=True),
+                            ],
+                            dim=1,
+                        ),
+                        dim=1,
+                    )
+                    == torch.argmax(
+                        torch.cat(
+                            [
+                                torch.sum(q_t * p_t, dim=-1, keepdim=True),
+                                torch.sum(q_t * n_t, dim=-1, keepdim=True),
+                            ],
+                            dim=1,
+                        ),
+                        dim=1,
+                    )
+                ).float().mean().item()
+            ),
         }
         return total, metrics
 
-    def validate(self, step: int) -> dict[str, float]:
+    def validate(self, step: int, *, force_mini_eval: bool = False, force_full_eval: bool = False) -> dict[str, float]:
         self.projector.eval()
         totals: dict[str, float] = {}
         per_batch: dict[str, list[float]] = {}
@@ -437,6 +716,16 @@ class QueryDistillationTrainer:
             out[f"{key}_batch_min"] = float(arr.min())
             out[f"{key}_batch_max"] = float(arr.max())
         out.update(self.run_beir_probe(step))
+        should_run_mini = force_mini_eval or (
+            self.beir_mini_eval_every > 0 and step > 0 and step % self.beir_mini_eval_every == 0
+        )
+        if should_run_mini:
+            out.update(self.run_beir_eval(step, self.beir_mini_eval_config, "beir_mini"))
+        should_run_full = force_full_eval or (
+            self.beir_full_eval_every > 0 and step > 0 and step % self.beir_full_eval_every == 0
+        )
+        if should_run_full:
+            out.update(self.run_beir_eval(step, self.beir_full_eval_config, "beir_full"))
         print(f"[val] step={step}", flush=True)
         print(
             "[val] losses "
@@ -520,6 +809,33 @@ class QueryDistillationTrainer:
                     rows.append(json.loads(line))
         return rows
 
+    def _rank_bm25_hard_negatives(
+        self,
+        *,
+        query: str,
+        relevant_doc_ids: set[str],
+        corpus_ids: list[str],
+        corpus_texts: list[str],
+        top_k: int,
+    ) -> list[tuple[str, str]]:
+        try:
+            from rank_bm25 import BM25Okapi
+        except ImportError as exc:
+            raise ImportError("Install rank-bm25 to use BM25 hard-negative BEIR probe") from exc
+        bm25 = BM25Okapi([text.lower().split() for text in corpus_texts])
+        scores = bm25.get_scores(query.lower().split())
+        negatives: list[tuple[str, str]] = []
+        for idx in np.argsort(-scores):
+            doc_id = corpus_ids[int(idx)]
+            if doc_id in relevant_doc_ids:
+                continue
+            text = corpus_texts[int(idx)]
+            if text:
+                negatives.append((doc_id, text))
+            if len(negatives) >= top_k:
+                break
+        return negatives
+
     def _load_beir_probe_cases(self) -> list[dict[str, str]]:
         if not self.beir_probe_config:
             return []
@@ -545,6 +861,9 @@ class QueryDistillationTrainer:
                 ).strip()
                 for r in corpus_rows
             }
+            corpus = {doc_id: text for doc_id, text in corpus.items() if text}
+            corpus_ids = list(corpus.keys())
+            corpus_texts = [corpus[doc_id] for doc_id in corpus_ids]
             queries = {str(r["_id"]): str(r.get("text", "")) for r in query_rows}
             relevant: dict[str, set[str]] = {}
             try:
@@ -557,53 +876,117 @@ class QueryDistillationTrainer:
             except Exception as exc:
                 print(f"[beir-probe] cannot read qrels {qrels_path}: {exc}")
                 continue
-            corpus_ids = list(corpus.keys())
             candidate_qids = [qid for qid in relevant.keys() if qid in queries]
             rng = np.random.default_rng(42 + dataset_idx)
             rng.shuffle(candidate_qids)
             dataset_cases = 0
             for qid in candidate_qids:
-                pos_ids = list(relevant.get(qid, set()))
+                pos_ids = [doc_id for doc_id in sorted(relevant.get(qid, set())) if doc_id in corpus]
                 if not pos_ids:
                     continue
                 pos_text = corpus.get(pos_ids[0], "")
-                neg_texts = [corpus[cid] for cid in corpus_ids if cid not in relevant[qid] and corpus.get(cid, "")]
-                if pos_text and neg_texts:
+                if pos_text:
+                    negatives = self._rank_bm25_hard_negatives(
+                        query=queries[qid],
+                        relevant_doc_ids=set(pos_ids),
+                        corpus_ids=corpus_ids,
+                        corpus_texts=corpus_texts,
+                        top_k=self.beir_probe_negatives,
+                    )
+                    if not negatives:
+                        continue
                     cases.append(
                         {
                             "dataset": dataset_name,
                             "query_id": qid,
                             "positive_doc_id": pos_ids[0],
+                            "positive_doc_ids": pos_ids,
                             "query": queries[qid],
                             "positive": pos_text,
-                            "negative": neg_texts[0],
-                            "negatives": neg_texts[: self.beir_probe_negatives],
+                            "negative": negatives[0][1],
+                            "negative_doc_ids": [doc_id for doc_id, _text in negatives],
+                            "negatives": [text for _doc_id, text in negatives],
                         }
                     )
                     dataset_cases += 1
                 if dataset_cases >= samples_per_dataset:
                     break
-            print(f"[beir-probe] loaded {dataset_cases} cases from {dataset_name}")
+            print(
+                f"[beir-probe] loaded {dataset_cases} query cases from {dataset_name} "
+                f"with bm25_hard_negatives={self.beir_probe_negatives} corpus_docs={len(corpus_ids)}",
+                flush=True,
+            )
         print(f"[beir-probe] loaded {len(cases)} total cases from {len(datasets)} configured datasets")
         return cases
 
-    def _encode_probe_texts(self, texts: list[str]) -> torch.Tensor:
+    def _encode_probe_texts(self, texts: list[str], mode: str = "doc") -> torch.Tensor:
         chunks = []
         for start in range(0, len(texts), self.beir_probe_batch_size):
             batch = texts[start : start + self.beir_probe_batch_size]
-            chunks.append(F.normalize(self.encode_texts(batch).float(), dim=-1))
+            chunks.append(F.normalize(self.encode_texts(batch, mode=mode).float(), dim=-1))
         return torch.cat(chunks, dim=0)
+
+    def _load_beir_eval_template(self, config_path: str | None) -> dict[str, Any] | None:
+        if not config_path:
+            return None
+        cfg = load_yaml(config_path)
+        return cfg if isinstance(cfg, dict) else None
+
+    def run_beir_eval(self, step: int, config_path: str | None, prefix: str) -> dict[str, float]:
+        template = self._load_beir_eval_template(config_path)
+        if template is None:
+            return {}
+        checkpoint_path = self.output_dir / f"checkpoint_step_{step}.pt"
+        if not checkpoint_path.exists():
+            return {}
+        start_time = time.perf_counter()
+        cfg = json.loads(json.dumps(template))
+        cfg.setdefault("encoder", {})
+        cfg["encoder"]["name"] = "oscar_projector"
+        cfg["encoder"]["kwargs"] = {
+            "oscar_model_name": self.oscar_model_name,
+            "projector_path": str(checkpoint_path),
+            "device": str(self.device),
+            "embed_dim": int(self.projector_config.get("embed_dim", 768)),
+            "pooler": str(self.projector_config.get("pooler", "flatten")),
+            "num_layers": int(self.projector_config.get("num_layers", 2)),
+            "dropout": float(self.projector_config.get("dropout", 0.0)),
+            "projector_hidden_dim": int(self.projector_config.get("projector_hidden_dim", 8192)),
+        }
+        summary = evaluate_beir(cfg)
+        print(f"[{prefix}] step={step} elapsed_sec={time.perf_counter() - start_time:.1f}", flush=True)
+        metrics: dict[str, float] = {}
+        avg = summary.get("average", {})
+        if isinstance(avg, dict):
+            for key, value in avg.items():
+                try:
+                    metrics[f"{prefix}_{key}"] = float(value)
+                except (TypeError, ValueError):
+                    continue
+        per_dataset = summary.get("per_dataset", {})
+        if isinstance(per_dataset, dict):
+            for dataset_name, ds_metrics in per_dataset.items():
+                if not isinstance(ds_metrics, dict):
+                    continue
+                safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(dataset_name))
+                for key, value in ds_metrics.items():
+                    try:
+                        metrics[f"{prefix}_{safe_name}_{key}"] = float(value)
+                    except (TypeError, ValueError):
+                        continue
+        return metrics
 
     def run_beir_probe(self, step: int) -> dict[str, float]:
         if not self._beir_probe_cases:
             return {}
+        start_time = time.perf_counter()
         with torch.no_grad():
             queries = [c["query"] for c in self._beir_probe_cases]
             positives = [c["positive"] for c in self._beir_probe_cases]
             negatives = [c["negative"] for c in self._beir_probe_cases]
-            q_emb = self._encode_probe_texts(queries)
-            p_emb = self._encode_probe_texts(positives)
-            n_emb = self._encode_probe_texts(negatives)
+            q_emb = self._encode_probe_texts(queries, mode="query")
+            p_emb = self._encode_probe_texts(positives, mode="doc")
+            n_emb = self._encode_probe_texts(negatives, mode="doc")
             pos_cos = (q_emb * p_emb).sum(dim=-1).cpu().numpy()
             neg_cos = (q_emb * n_emb).sum(dim=-1).cpu().numpy()
             candidate_texts: list[str] = []
@@ -613,8 +996,8 @@ class QueryDistillationTrainer:
                 candidate_texts.append(case["positive"])
                 candidate_texts.extend(case.get("negatives", [case["negative"]]))
                 offsets.append((start, len(candidate_texts)))
-            cand_emb = self._encode_probe_texts(candidate_texts)
-            similarities = torch.matmul(q_emb, cand_emb.T).cpu().numpy()
+            cand_emb = self._encode_probe_texts(candidate_texts, mode="doc")
+            similarities = torch.matmul(q_emb, cand_emb.T).detach().cpu().numpy()
         mrr_at_10 = 0.0
         recall_at_10 = 0.0
         ndcg_at_10 = 0.0
@@ -628,9 +1011,8 @@ class QueryDistillationTrainer:
         for i, (start, stop) in enumerate(offsets):
             local_scores = similarities[i, start:stop]
             rank = int(np.where(np.argsort(-local_scores) == 0)[0][0]) + 1
-            interquery_rank = int(np.where(np.argsort(-similarities[i]) == start)[0][0]) + 1
             ranks.append(rank)
-            interquery_ranks.append(interquery_rank)
+            interquery_ranks.append(rank)
             reciprocal_ranks.append(1.0 / rank)
             discounted_gain = 1.0 / float(np.log2(rank + 1.0)) if rank <= 10 else 0.0
             discounted_gains.append(discounted_gain)
@@ -638,11 +1020,9 @@ class QueryDistillationTrainer:
                 mrr_at_10 += 1.0 / rank
                 recall_at_10 += 1.0
                 ndcg_at_10 += discounted_gain
-            if interquery_rank <= 10:
-                interquery_mrr_at_10 += 1.0 / interquery_rank
+                interquery_mrr_at_10 += 1.0 / rank
                 interquery_recall_at_10 += 1.0
-                interquery_ndcg_at_10 += 1.0 / float(np.log2(interquery_rank + 1.0))
-        denom = max(1, len(offsets))
+                interquery_ndcg_at_10 += discounted_gain
         pos_mean = float(np.mean(pos_cos))
         neg_mean = float(np.mean(neg_cos))
         gaps = pos_cos - neg_cos
@@ -651,6 +1031,7 @@ class QueryDistillationTrainer:
         interquery_rank_arr = np.asarray(interquery_ranks, dtype=np.float32)
         rr_arr = np.asarray(reciprocal_ranks, dtype=np.float32)
         ndcg_arr = np.asarray(discounted_gains, dtype=np.float32)
+        denom = max(1, len(rank_arr))
         datasets = [str(case.get("dataset", "beir")) for case in self._beir_probe_cases]
         dataset_summaries: dict[str, dict[str, float]] = {}
         for dataset_name in sorted(set(datasets)):
@@ -741,7 +1122,8 @@ class QueryDistillationTrainer:
         self.writer.add_histogram("beir_probe/gap", gaps, step)
         self.writer.add_histogram("beir_probe/rank", rank_arr, step)
         print(
-            f"[beir-probe] step={step} pos_mean={pos_mean:.6f} neg_mean={neg_mean:.6f} "
+            f"[beir-probe] step={step} mode=bm25_hard elapsed_sec={time.perf_counter() - start_time:.1f} "
+            f"pos_mean={pos_mean:.6f} neg_mean={neg_mean:.6f} "
             f"gap={gap_mean:.6f} gap_std={float(np.std(gaps)):.6f} "
             f"rank_mean={float(rank_arr.mean()) if len(rank_arr) else 0.0:.6f} "
             f"rank_median={float(np.median(rank_arr)) if len(rank_arr) else 0.0:.6f} "
@@ -827,8 +1209,6 @@ class QueryDistillationTrainer:
             "beir_interquery_mrr@10": interquery_mrr_at_10 / denom,
             "beir_interquery_ndcg@10": interquery_ndcg_at_10 / denom,
             "beir_interquery_recall@10": interquery_recall_at_10 / denom,
-            # Backward-compatible alias used for selection. This is a sampled
-            # cross-query candidate-pool metric, not full-corpus retrieval.
             "beir_proxy_mrr@10": interquery_mrr_at_10 / denom,
             "beir_proxy_ndcg@10": interquery_ndcg_at_10 / denom,
             "beir_proxy_recall@10": interquery_recall_at_10 / denom,
@@ -845,6 +1225,8 @@ class QueryDistillationTrainer:
             return float(metrics[self.selection_metric])
         if self.selection_metric == "gap" and "gap" in metrics:
             return float(metrics["gap"])
+        if self.selection_metric.startswith("beir_full_"):
+            return float("-inf")
         fallback_keys = ("beir_probe_ndcg@10", "beir_probe_mrr@10", "beir_interquery_ndcg@10", "gap")
         for key in fallback_keys:
             if key in metrics:
@@ -854,6 +1236,31 @@ class QueryDistillationTrainer:
                 )
                 return float(metrics[key])
         return float("-inf")
+
+    def _validate_and_checkpoint(
+        self,
+        *,
+        step: int,
+        best_score: float,
+        validations_without_improvement: int,
+        force_mini_eval: bool = False,
+        force_full_eval: bool = False,
+        early_stopping_patience: int = 0,
+    ) -> tuple[float, int, bool]:
+        val_metrics = self.validate(step, force_mini_eval=force_mini_eval, force_full_eval=force_full_eval)
+        score = self._selection_score(val_metrics)
+        is_best = score > best_score
+        self.save_checkpoint(step, val_metrics, is_best=is_best)
+        if is_best:
+            return score, 0, False
+        validations_without_improvement += 1
+        if early_stopping_patience > 0 and validations_without_improvement >= early_stopping_patience:
+            print(
+                f"Early stopping at step {step}: best_score={best_score:.6f}, current_score={score:.6f}",
+                flush=True,
+            )
+            return best_score, validations_without_improvement, True
+        return best_score, validations_without_improvement, False
 
     def train(self, num_epochs: int, val_every_n_steps: int, early_stopping_patience: int = 0) -> None:
         print(f"\n{'=' * 60}")
@@ -887,6 +1294,7 @@ class QueryDistillationTrainer:
             pbar = tqdm(self.train_loader, desc=f"Epoch {epoch}")
             for batch in pbar:
                 micro_step += 1
+                self._current_step = int(global_step)
                 loss, metrics = self.compute_loss({k: (v.to(self.device) if torch.is_tensor(v) else v) for k, v in batch.items()})
                 (loss / self.gradient_accumulation_steps).backward()
                 should_step = micro_step % self.gradient_accumulation_steps == 0
@@ -926,30 +1334,38 @@ class QueryDistillationTrainer:
                                 global_step,
                             )
                 if should_step and val_every_n_steps > 0 and global_step % val_every_n_steps == 0:
-                    val_metrics = self.validate(global_step)
-                    score = self._selection_score(val_metrics)
-                    is_best = score > best_score
-                    self.save_checkpoint(global_step, val_metrics, is_best=is_best)
-                    if is_best:
-                        best_score = score
-                        validations_without_improvement = 0
-                    else:
-                        validations_without_improvement += 1
-                        if early_stopping_patience > 0 and validations_without_improvement >= early_stopping_patience:
-                            print(
-                                f"Early stopping at step {global_step}: "
-                                f"best_score={best_score:.6f}, current_score={score:.6f}"
-                            )
-                            self.writer.close()
-                            self.train_dataset.close()
-                            self.val_dataset.close()
-                            return
+                    best_score, validations_without_improvement, should_stop = self._validate_and_checkpoint(
+                        step=global_step,
+                        best_score=best_score,
+                        validations_without_improvement=validations_without_improvement,
+                        early_stopping_patience=early_stopping_patience,
+                    )
+                    if should_stop:
+                        self.writer.close()
+                        self.train_dataset.close()
+                        self.val_dataset.close()
+                        return
                     self.projector.train()
                 if self.max_steps > 0 and global_step >= self.max_steps:
                     self.writer.close()
                     self.train_dataset.close()
                     self.val_dataset.close()
                     return
+            if global_step > 0:
+                print(f"[epoch-end] epoch={epoch} step={global_step} running forced BEIR full eval", flush=True)
+                best_score, validations_without_improvement, should_stop = self._validate_and_checkpoint(
+                    step=global_step,
+                    best_score=best_score,
+                    validations_without_improvement=validations_without_improvement,
+                    force_full_eval=True,
+                    early_stopping_patience=early_stopping_patience,
+                )
+                if should_stop:
+                    self.writer.close()
+                    self.train_dataset.close()
+                    self.val_dataset.close()
+                    return
+                self.projector.train()
         self.writer.close()
         self.train_dataset.close()
         self.val_dataset.close()
@@ -961,9 +1377,24 @@ def main() -> None:
     parser.add_argument("--teacher-embeddings", nargs="+", required=True)
     parser.add_argument("--embed-dim", type=int, default=768)
     parser.add_argument("--pooler", default="flatten")
+    parser.add_argument("--projector-type", default="mem", choices=["mem", "dual_head", "token_dual"])
     parser.add_argument("--num-layers", type=int, default=2)
     parser.add_argument("--dropout", type=float, default=0.0)
     parser.add_argument("--projector-hidden-dim", type=int, default=8192)
+    parser.add_argument("--mem-tokens", type=int, default=8)
+    parser.add_argument("--attn-dim", type=int, default=1536)
+    parser.add_argument("--attn-layers", type=int, default=2)
+    parser.add_argument("--attn-heads", type=int, default=8)
+    parser.add_argument("--stage1-steps", type=int, default=0)
+    parser.add_argument("--stage1-query-mse-weight", type=float, default=0.5)
+    parser.add_argument("--stage1-doc-mse-weight", type=float, default=0.5)
+    parser.add_argument("--stage1-negative-mse-weight", type=float, default=0.1)
+    parser.add_argument("--stage2-query-mse-weight", type=float, default=0.2)
+    parser.add_argument("--stage2-doc-mse-weight", type=float, default=0.2)
+    parser.add_argument("--stage2-negative-mse-weight", type=float, default=0.0)
+    parser.add_argument("--stage2-teacher-listwise-kl-weight", type=float, default=0.6)
+    parser.add_argument("--stage2-ranking-weight", type=float, default=0.1)
+    parser.add_argument("--stage2-infonce-weight", type=float, default=0.2)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--gradient-accumulation-steps", type=int, default=1)
     parser.add_argument("--lr", type=float, default=5e-5)
@@ -984,6 +1415,10 @@ def main() -> None:
     parser.add_argument("--beir-probe-samples-per-dataset", type=int, default=None)
     parser.add_argument("--beir-probe-negatives", type=int, default=20)
     parser.add_argument("--beir-probe-batch-size", type=int, default=8)
+    parser.add_argument("--beir-mini-eval-config", default=None)
+    parser.add_argument("--beir-mini-eval-every", type=int, default=0)
+    parser.add_argument("--beir-full-eval-config", default=None)
+    parser.add_argument("--beir-full-eval-every", type=int, default=0)
     parser.add_argument("--selection-metric", default="beir_proxy_ndcg@10")
     parser.add_argument("--dataset-sampling-weights", default=None)
     parser.add_argument("--resume-checkpoint", default=None)
@@ -1007,9 +1442,24 @@ def main() -> None:
         teacher_embeddings_path=list(args.teacher_embeddings),
         embed_dim=args.embed_dim,
         pooler=args.pooler,
+        projector_type=args.projector_type,
         num_layers=args.num_layers,
         dropout=args.dropout,
         projector_hidden_dim=args.projector_hidden_dim,
+        mem_tokens=args.mem_tokens,
+        attn_dim=args.attn_dim,
+        attn_layers=args.attn_layers,
+        attn_heads=args.attn_heads,
+        stage1_steps=args.stage1_steps,
+        stage1_query_mse_weight=args.stage1_query_mse_weight,
+        stage1_doc_mse_weight=args.stage1_doc_mse_weight,
+        stage1_negative_mse_weight=args.stage1_negative_mse_weight,
+        stage2_query_mse_weight=args.stage2_query_mse_weight,
+        stage2_doc_mse_weight=args.stage2_doc_mse_weight,
+        stage2_negative_mse_weight=args.stage2_negative_mse_weight,
+        stage2_teacher_listwise_kl_weight=args.stage2_teacher_listwise_kl_weight,
+        stage2_ranking_weight=args.stage2_ranking_weight,
+        stage2_infonce_weight=args.stage2_infonce_weight,
         batch_size=args.batch_size,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         lr=args.lr,
@@ -1030,6 +1480,10 @@ def main() -> None:
         beir_probe_samples_per_dataset=args.beir_probe_samples_per_dataset,
         beir_probe_negatives=args.beir_probe_negatives,
         beir_probe_batch_size=args.beir_probe_batch_size,
+        beir_mini_eval_config=args.beir_mini_eval_config,
+        beir_mini_eval_every=args.beir_mini_eval_every,
+        beir_full_eval_config=args.beir_full_eval_config,
+        beir_full_eval_every=args.beir_full_eval_every,
         selection_metric=args.selection_metric,
         dataset_sampling_weights=json.loads(args.dataset_sampling_weights) if args.dataset_sampling_weights else None,
         resume_checkpoint=args.resume_checkpoint,

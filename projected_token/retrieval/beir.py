@@ -40,6 +40,28 @@ def _encode_batches(encoder: Any, texts: list[str], batch_size: int) -> np.ndarr
     return np.concatenate(chunks, axis=0) if chunks else np.zeros((0, 0), dtype=np.float32)
 
 
+def _encode_query_batches(encoder: Any, queries: list[str], batch_size: int) -> np.ndarray:
+    chunks: list[np.ndarray] = []
+    total = len(queries)
+    if total == 0:
+        print("[beir] encode: no queries to process", flush=True)
+        return np.zeros((0, 0), dtype=np.float32)
+    total_batches = (total + batch_size - 1) // batch_size
+    for batch_idx, start in enumerate(range(0, total, batch_size), start=1):
+        batch_queries = queries[start:start + batch_size]
+        encoded = encoder.encode(batch_queries, batch_queries)
+        if hasattr(encoded, "detach"):
+            encoded = encoded.detach().cpu().numpy()
+        chunks.append(np.asarray(encoded, dtype=np.float32))
+        processed = min(start + len(batch_queries), total)
+        print(
+            f"[beir] query encode progress: {processed}/{total} queries "
+            f"({batch_idx}/{total_batches} batches)",
+            flush=True,
+        )
+    return np.concatenate(chunks, axis=0) if chunks else np.zeros((0, 0), dtype=np.float32)
+
+
 def _load_jsonl(path: Path) -> list[dict[str, Any]]:
     with jsonlines.open(path, "r") as reader:
         return [row for row in reader]
@@ -141,7 +163,7 @@ def evaluate_beir(config: dict[str, Any]) -> dict[str, Any]:
             embeddings = l2_normalize(embeddings)
         index = create_faiss_index(embeddings, index_cfg.get("metric", "ip"))
 
-        query_embeddings = _encode_batches(encoder, query_texts, batch_size=batch_size)
+        query_embeddings = _encode_query_batches(encoder, query_texts, batch_size=batch_size)
         query_embeddings = l2_normalize(query_embeddings)
         _, indices = index.search(query_embeddings.astype(np.float32), search_k)
 

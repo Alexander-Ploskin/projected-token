@@ -231,3 +231,6 @@ data
 !projected_token/data/recipes/prepare_leaf_corpus.py
 !projected_token/data/recipes/generate_leaf_teacher_embeddings.py
 .hf_home
+.hf-cache
+.hf-home
+.artifacts_local

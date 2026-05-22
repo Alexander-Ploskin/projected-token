@@ -1,0 +1,63 @@
+recipe: query_distill
+run_id: stage-b-query-distill-bge-base-token-dual-salvage
+run_base_dir: artifacts/query_distill_runs_token_dual
+oscar_model: naver/oscar-qwen2-7B
+teacher_embeddings:
+  - artifacts/teacher-embeddings/query-doc-bge-base-full/msmarco-hard.h5
+  - artifacts/teacher-embeddings/query-doc-bge-base-full/nfcorpus-train-hard.h5
+  - artifacts/teacher-embeddings/query-doc-bge-base-full/fiqa-train-hard.h5
+  - artifacts/teacher-embeddings/query-doc-bge-base-full/arguana-train-hard.h5
+  - artifacts/teacher-embeddings/query-doc-bge-base-full/quora-train-hard.h5
+  - artifacts/teacher-embeddings/query-doc-bge-base-full/scifact-train-hard.h5
+embed_dim: 768
+pooler: flatten
+projector_type: token_dual
+dropout: 0.05
+projector_hidden_dim: 4096
+num_layers: 2
+mem_tokens: 8
+attn_dim: 1536
+attn_layers: 2
+attn_heads: 8
+batch_size: 16
+gradient_accumulation_steps: 4
+lr: 5.0e-6
+min_lr: 1.0e-6
+max_steps: 7250
+epochs: 3
+warmup_steps: 200
+scheduler: cosine
+query_mse_weight: 1.0
+doc_mse_weight: 1.0
+negative_mse_weight: 0.1
+ranking_weight: 0.2
+infonce_weight: 0.05
+temperature: 0.05
+margin: 0.15
+stage1_steps: 0
+stage2_query_mse_weight: 0.25
+stage2_doc_mse_weight: 0.25
+stage2_negative_mse_weight: 0.10
+stage2_teacher_listwise_kl_weight: 0.30
+stage2_ranking_weight: 0.20
+stage2_infonce_weight: 0.15
+val_split: 0.02
+val_every: 250
+early_stopping_patience: 4
+beir_probe_config: configs/retrieval/beir3_proxy_multi_stage_b.yaml
+beir_probe_samples: 100
+beir_probe_samples_per_dataset: 100
+beir_probe_negatives: 200
+beir_probe_batch_size: 8
+beir_full_eval_config: configs/retrieval/beir3_stage_b_bge_base_leaf.yaml
+beir_full_eval_every: 1000
+selection_metric: beir_proxy_ndcg@10
+dataset_sampling_weights:
+  msmarco: 0.50
+  fiqa: 0.15
+  quora: 0.15
+  nfcorpus: 0.08
+  scifact: 0.07
+  arguana: 0.05
+resume_checkpoint: artifacts/query_distill_runs_5ep_resume2750_noes/stage-b-query-distill-dataablate-msmarco-bm25-30-100-mse-only-5ep-resume2750-noes/checkpoints/checkpoint_step_5250.pt
+device: cuda:0

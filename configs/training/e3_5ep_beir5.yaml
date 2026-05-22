@@ -1,0 +1,64 @@
+recipe: query_distill
+run_id: e3-5ep-beir5-noquora-dual-head-candidate
+run_base_dir: artifacts/query_distill_runs_dual_head
+oscar_model: naver/oscar-qwen2-7B
+teacher_embeddings:
+  - artifacts/teacher-embeddings/query-doc-bge-base-candidates/scifact-train-candidates.h5
+  - artifacts/teacher-embeddings/query-doc-bge-base-candidates/nfcorpus-train-candidates.h5
+  - artifacts/teacher-embeddings/query-doc-bge-base-candidates/fiqa-train-candidates.h5
+  - artifacts/teacher-embeddings/query-doc-bge-base-candidates/arguana-train-candidates.h5
+  - artifacts/teacher-embeddings/query-doc-bge-base-candidates/trec-covid-train-candidates.h5
+  - artifacts/teacher-embeddings/query-doc-bge-base-candidates/msmarco-candidates.h5
+  - artifacts/teacher-embeddings/query-doc-bge-base-candidates/quora-train-candidates.h5
+embed_dim: 768
+pooler: flatten
+projector_type: dual_head
+dropout: 0.05
+projector_hidden_dim: 8192
+num_layers: 2
+batch_size: 8
+gradient_accumulation_steps: 16
+lr: 2.0e-5
+min_lr: 1.0e-6
+epochs: 5
+warmup_steps: 1000
+scheduler: cosine
+query_mse_weight: 0.0
+doc_mse_weight: 0.0
+negative_mse_weight: 0.0
+ranking_weight: 0.0
+infonce_weight: 0.0
+temperature: 0.05
+margin: 0.15
+stage1_steps: 1000
+stage1_query_mse_weight: 0.4
+stage1_doc_mse_weight: 0.0
+stage1_negative_mse_weight: 0.0
+stage2_query_mse_weight: 0.05
+stage2_doc_mse_weight: 0.0
+stage2_negative_mse_weight: 0.0
+stage2_teacher_listwise_kl_weight: 0.65
+stage2_ranking_weight: 0.10
+stage2_infonce_weight: 0.20
+val_split: 0.02
+val_every: 250
+early_stopping_patience: 0
+beir_probe_config: configs/retrieval/beir3_proxy_multi_stage_b.yaml
+beir_probe_samples: 120
+beir_probe_samples_per_dataset: 120
+beir_probe_negatives: 50
+beir_probe_batch_size: 8
+beir_mini_eval_config: configs/retrieval/beir_mini_scifact.yaml
+beir_mini_eval_every: 1000
+beir_full_eval_config: configs/retrieval/beir5_stage_b_no_quora.yaml
+beir_full_eval_every: 1000
+selection_metric: beir_full_ndcg@10
+dataset_sampling_weights:
+  scifact: 0.18
+  trec-covid: 0.18
+  fiqa: 0.17
+  nfcorpus: 0.15
+  arguana: 0.12
+  msmarco: 0.15
+  quora: 0.05
+device: cuda:0

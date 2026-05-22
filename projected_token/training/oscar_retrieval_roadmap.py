@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -198,6 +199,38 @@ def _run_bm25_baselines(protocol: EvalProtocol, output_dir: Path) -> dict[str, A
     return payload
 
 
+def _run_bge_teacher_baseline(protocol: EvalProtocol, output_dir: Path) -> dict[str, Any]:
+    beir_cfg = {
+        "encoder": {
+            "name": "bge",
+            "kwargs": {
+                "model_name_or_path": "BAAI/bge-base-en-v1.5",
+                "device": protocol.device,
+                "normalize_embeddings": True,
+                "query_prefix": "Represent this sentence for searching relevant passages: ",
+                "document_prefix": "",
+            },
+        },
+        "index": {
+            "metric": protocol.index_metric,
+            "normalize": protocol.normalize,
+            "batch_size": protocol.batch_size,
+        },
+        "split": protocol.split,
+        "search_k": protocol.search_k,
+        "datasets": protocol.beir_datasets,
+        "metrics": {
+            "top_k": protocol.top_k,
+            "output_path": str(output_dir / "bge_teacher_beir_summary.json"),
+            "output_csv_path": str(output_dir / "bge_teacher_beir_summary.csv"),
+            "run_id": "roadmap_bge_teacher_beir",
+        },
+    }
+    summary = evaluate_beir(beir_cfg)
+    write_json(output_dir / "bge_teacher_baseline.json", summary)
+    return summary
+
+
 def _run_matrix_stage(stage_name: str, matrix_path: Path, protocol: EvalProtocol, output_dir: Path) -> dict[str, Any]:
     run_matrix(matrix_path)
     matrix_cfg = load_yaml(matrix_path)
@@ -216,8 +249,18 @@ def _run_matrix_stage(stage_name: str, matrix_path: Path, protocol: EvalProtocol
 
 def run_roadmap(stage: str, protocol_config: str, run_baselines: bool) -> dict[str, Any]:
     protocol = _load_protocol(protocol_config)
-    output_dir = _resolve_path("artifacts/results/retrieval/roadmap")
-    output_dir.mkdir(parents=True, exist_ok=True)
+    output_override = os.environ.get("PROJECTED_TOKEN_ROADMAP_OUTPUT_DIR")
+    output_dir = _resolve_path(output_override) if output_override else _resolve_path("artifacts/results/retrieval/roadmap")
+    try:
+        output_dir.mkdir(parents=True, exist_ok=True)
+    except PermissionError:
+        fallback = _resolve_path(".artifacts_local/results/retrieval/roadmap")
+        fallback.mkdir(parents=True, exist_ok=True)
+        print(
+            f"[roadmap] cannot write to {output_dir}; using fallback {fallback}",
+            flush=True,
+        )
+        output_dir = fallback
     matrix_map = {
         "a": _resolve_path("configs/training/matrix_stage_a.yaml"),
         "b": _resolve_path("configs/training/matrix_stage_b_distill.yaml"),
@@ -229,6 +272,7 @@ def run_roadmap(stage: str, protocol_config: str, run_baselines: bool) -> dict[s
     results: dict[str, Any] = {"stage": stage, "protocol_config": str(protocol_config)}
     if stage in {"freeze-eval", "all"} and run_baselines:
         results["bm25_baselines"] = _run_bm25_baselines(protocol, output_dir)
+        results["bge_teacher_baseline"] = _run_bge_teacher_baseline(protocol, output_dir)
 
     ordered_stages = ["a", "b", "c", "d", "e"] if stage == "all" else [stage]
     for stage_key in ordered_stages:

@@ -4,7 +4,7 @@ from pathlib import Path
 from transformers import AutoModel
 
 from projected_token.encoders import Encoder
-from projected_token.encoders.projector import MEMProjector, DistillationProjector
+from projected_token.encoders.projector import MEMProjector, DistillationProjector, DualHeadMEMProjector, TokenAwareDualProjector
 from projected_token.oscar_runtime import disable_transformers_allocator_warmup, configure_oscar_component_devices
 
 
@@ -262,7 +262,14 @@ class OscarProjectorEncoder(Encoder):
         # older distillation checkpoints may use DistillationProjector. Infer from
         # checkpoint objective and state_dict layout first, then fallback to config.
         use_distillation = False
+        use_token_dual = False
+        use_dual_head = False
         training_objective = checkpoint_config.get("training_objective") if checkpoint_config else None
+        projector_type = checkpoint_config.get("projector_type") if checkpoint_config else None
+        if projector_type == "token_dual":
+            use_token_dual = True
+        if projector_type == "dual_head":
+            use_dual_head = True
         if training_objective == "query_doc_bge_distill":
             use_distillation = False
         elif checkpoint is not None and "model_state_dict" in checkpoint:
@@ -278,7 +285,32 @@ class OscarProjectorEncoder(Encoder):
         else:
             use_distillation = oscar_hidden_dim is not None
         
-        if use_distillation:
+        if use_token_dual:
+            print("Using TokenAwareDualProjector")
+            self._projector = TokenAwareDualProjector(
+                hidden_dim=hidden_size,
+                embed_dim=embed_dim,
+                num_mem_tokens=int(checkpoint_config.get("mem_tokens", 8)) if checkpoint_config else 8,
+                attn_dim=int(checkpoint_config.get("attn_dim", 1536)) if checkpoint_config else 1536,
+                num_attn_layers=int(checkpoint_config.get("attn_layers", 2)) if checkpoint_config else 2,
+                num_heads=int(checkpoint_config.get("attn_heads", 8)) if checkpoint_config else 8,
+                dropout=dropout,
+                projector_hidden_dim=projector_hidden_dim or 4096,
+                head_layers=max(1, int(num_layers)),
+            ).to(device=device, dtype=torch.bfloat16)
+        elif use_dual_head:
+            print("Using DualHeadMEMProjector")
+            self._projector = DualHeadMEMProjector(
+                hidden_dim=hidden_size,
+                embed_dim=embed_dim,
+                pooler=pooler,
+                trunk_hidden_dim=projector_hidden_dim or hidden_size,
+                head_hidden_dim=max(embed_dim, (projector_hidden_dim or hidden_size) // 2),
+                trunk_layers=1,
+                head_layers=max(1, int(num_layers)),
+                dropout=dropout,
+            ).to(device=device, dtype=torch.bfloat16)
+        elif use_distillation:
             print(f"Using DistillationProjector (oscar_hidden_dim={oscar_hidden_dim})")
             self._projector = DistillationProjector(
                 oscar_hidden_dim=oscar_hidden_dim,
@@ -307,6 +339,7 @@ class OscarProjectorEncoder(Encoder):
         self._embed_dim = embed_dim
         self._oscar_model_name = oscar_model_name
         self._projector_path = projector_path
+        self._projector_type = "token_dual" if use_token_dual else ("dual_head" if use_dual_head else ("distillation" if use_distillation else "mem"))
     
     def _aggregate(self, tensor: torch.Tensor) -> torch.Tensor:
         """Агрегация тензора [batch, num_tokens, hidden] -> [batch, hidden]"""
@@ -339,7 +372,12 @@ class OscarProjectorEncoder(Encoder):
                 questions=None,
             )
             compressed = compressed.detach()
-            embeddings = self._projector(compressed)
+            if self._projector_type in {"token_dual", "dual_head"} and questions is not None:
+                embeddings = self._projector(compressed, mode="query")
+            elif self._projector_type in {"token_dual", "dual_head"}:
+                embeddings = self._projector(compressed, mode="doc")
+            else:
+                embeddings = self._projector(compressed)
             embeddings = embeddings.detach()
         
         result = torch.zeros(len(documents), self._embed_dim, device=self._device)
@@ -376,7 +414,12 @@ class OscarProjectorEncoder(Encoder):
                 questions=None,
             )
             compressed = compressed.detach()
-            embeddings = self._projector(compressed)
+            if self._projector_type in {"token_dual", "dual_head"} and questions is not None:
+                embeddings = self._projector(compressed, mode="query")
+            elif self._projector_type in {"token_dual", "dual_head"}:
+                embeddings = self._projector(compressed, mode="doc")
+            else:
+                embeddings = self._projector(compressed)
             embeddings = embeddings.detach()
         
         results = []

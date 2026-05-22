@@ -1,14 +1,14 @@
 recipe: query_distill
 run_id: stage-b-query-distill-bge-base-flatten-full-design-rank005-margin015
-run_base_dir: .artifacts_local/query_distill_runs
+run_base_dir: artifacts/query_distill_runs
 oscar_model: naver/oscar-qwen2-7B
 teacher_embeddings:
-  - data/teacher-embeddings/query-doc-bge-base-full/msmarco-hard.h5
-  - data/teacher-embeddings/query-doc-bge-base-full/nfcorpus-train-hard.h5
-  - data/teacher-embeddings/query-doc-bge-base-full/fiqa-train-hard.h5
-  - data/teacher-embeddings/query-doc-bge-base-full/arguana-train-hard.h5
-  - data/teacher-embeddings/query-doc-bge-base-full/quora-train-hard.h5
-  - data/teacher-embeddings/query-doc-bge-base-full/scifact-train-hard-augmented.h5
+  - artifacts/teacher-embeddings/query-doc-bge-base-full/msmarco-hard.h5
+  - artifacts/teacher-embeddings/query-doc-bge-base-full/nfcorpus-train-hard.h5
+  - artifacts/teacher-embeddings/query-doc-bge-base-full/fiqa-train-hard.h5
+  - artifacts/teacher-embeddings/query-doc-bge-base-full/arguana-train-hard.h5
+  - artifacts/teacher-embeddings/query-doc-bge-base-full/quora-train-hard.h5
+  - artifacts/teacher-embeddings/query-doc-bge-base-full/scifact-train-hard-augmented.h5
 embed_dim: 768
 pooler: flatten
 dropout: 0.0

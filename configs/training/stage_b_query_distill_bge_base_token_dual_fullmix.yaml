@@ -1,0 +1,65 @@
+recipe: query_distill
+run_id: stage-b-query-distill-bge-base-token-dual-fullmix
+run_base_dir: artifacts/query_distill_runs_token_dual
+oscar_model: naver/oscar-qwen2-7B
+teacher_embeddings:
+  - artifacts/teacher-embeddings/query-doc-bge-base-full/msmarco-hard.h5
+  - artifacts/teacher-embeddings/query-doc-bge-base-full/nfcorpus-train-hard.h5
+  - artifacts/teacher-embeddings/query-doc-bge-base-full/fiqa-train-hard.h5
+  - artifacts/teacher-embeddings/query-doc-bge-base-full/arguana-train-hard.h5
+  - artifacts/teacher-embeddings/query-doc-bge-base-full/quora-train-hard.h5
+  - artifacts/teacher-embeddings/query-doc-bge-base-full/scifact-train-hard.h5
+embed_dim: 768
+pooler: flatten
+projector_type: token_dual
+dropout: 0.05
+projector_hidden_dim: 4096
+num_layers: 2
+mem_tokens: 8
+attn_dim: 1536
+attn_layers: 3
+attn_heads: 8
+batch_size: 16
+gradient_accumulation_steps: 8
+lr: 1.5e-5
+min_lr: 1.0e-6
+max_steps: 20000
+epochs: 10
+warmup_steps: 1200
+scheduler: cosine
+query_mse_weight: 1.0
+doc_mse_weight: 1.0
+negative_mse_weight: 0.0
+ranking_weight: 0.0
+infonce_weight: 0.0
+temperature: 0.05
+margin: 0.15
+stage1_steps: 2000
+stage1_query_mse_weight: 0.5
+stage1_doc_mse_weight: 0.5
+stage1_negative_mse_weight: 0.1
+stage2_query_mse_weight: 0.15
+stage2_doc_mse_weight: 0.15
+stage2_negative_mse_weight: 0.1
+stage2_teacher_listwise_kl_weight: 0.65
+stage2_ranking_weight: 0.15
+stage2_infonce_weight: 0.2
+val_split: 0.02
+val_every: 250
+early_stopping_patience: 6
+beir_probe_config: configs/retrieval/beir3_proxy_multi_stage_b.yaml
+beir_probe_samples: 120
+beir_probe_samples_per_dataset: 120
+beir_probe_negatives: 250
+beir_probe_batch_size: 8
+beir_full_eval_config: configs/retrieval/beir3_stage_b_bge_base_leaf.yaml
+beir_full_eval_every: 1000
+selection_metric: beir_proxy_ndcg@10
+dataset_sampling_weights:
+  msmarco: 0.50
+  fiqa: 0.15
+  quora: 0.15
+  nfcorpus: 0.08
+  scifact: 0.07
+  arguana: 0.05
+device: cuda:0

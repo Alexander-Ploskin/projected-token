@@ -343,3 +343,149 @@ class DistillationProjector(nn.Module):
         embeddings = F.normalize(embeddings, p=2, dim=-1)
         
         return embeddings
+
+
+class DualHeadMEMProjector(BaseMEMProjector):
+    """Conservative dual-head MLP projector with a shared pooled trunk."""
+
+    def __init__(
+        self,
+        hidden_dim: int = 2048,
+        embed_dim: int = 768,
+        pooler: PoolerType = "flatten",
+        trunk_hidden_dim: Optional[int] = None,
+        head_hidden_dim: Optional[int] = None,
+        trunk_layers: int = 1,
+        head_layers: int = 2,
+        dropout: float = 0.1,
+    ):
+        super().__init__(hidden_dim, embed_dim, pooler)
+        trunk_hidden_dim = trunk_hidden_dim or hidden_dim
+        head_hidden_dim = head_hidden_dim or trunk_hidden_dim
+
+        def _input_dim() -> int:
+            if pooler in {"mean_max", "first_last"}:
+                return hidden_dim * 2
+            if pooler == "flatten":
+                return hidden_dim * 8
+            return hidden_dim
+
+        layers: list[nn.Module] = []
+        in_dim = _input_dim()
+        for _ in range(max(1, int(trunk_layers))):
+            layers.append(nn.Linear(in_dim, trunk_hidden_dim))
+            layers.append(nn.LayerNorm(trunk_hidden_dim))
+            layers.append(nn.GELU())
+            layers.append(nn.Dropout(dropout))
+            in_dim = trunk_hidden_dim
+        self.trunk = nn.Sequential(*layers)
+
+        def _make_head() -> nn.Sequential:
+            head: list[nn.Module] = []
+            in_head = trunk_hidden_dim
+            for i in range(max(1, int(head_layers))):
+                out_dim = embed_dim if i == max(1, int(head_layers)) - 1 else head_hidden_dim
+                head.append(nn.Linear(in_head, out_dim))
+                if out_dim != embed_dim:
+                    head.append(nn.GELU())
+                    head.append(nn.Dropout(dropout))
+                    head.append(nn.LayerNorm(out_dim))
+                in_head = out_dim
+            head.append(nn.LayerNorm(embed_dim))
+            return nn.Sequential(*head)
+
+        self.query_head = _make_head()
+        self.doc_head = _make_head()
+
+    def forward(self, mem_hiddens: torch.Tensor, mode: str = "doc") -> torch.Tensor:
+        pooled = self.pool(mem_hiddens)
+        features = self.trunk(pooled)
+        embeddings = self.query_head(features) if mode == "query" else self.doc_head(features)
+        return F.normalize(embeddings, p=2, dim=-1)
+
+
+class TokenAwareDualProjector(nn.Module):
+    """Token-aware dual-head projector for asymmetric query/document encoding."""
+
+    def __init__(
+        self,
+        hidden_dim: int = 3584,
+        embed_dim: int = 768,
+        num_mem_tokens: int = 8,
+        attn_dim: int = 1536,
+        num_attn_layers: int = 2,
+        num_heads: int = 8,
+        dropout: float = 0.1,
+        projector_hidden_dim: int = 4096,
+        head_layers: int = 2,
+    ):
+        super().__init__()
+        self.hidden_dim = int(hidden_dim)
+        self.embed_dim = int(embed_dim)
+        self.num_mem_tokens = int(num_mem_tokens)
+        self.attn_dim = int(attn_dim)
+        self.num_attn_layers = int(num_attn_layers)
+        self.num_heads = int(num_heads)
+
+        self.input_ln = nn.LayerNorm(self.hidden_dim)
+        self.token_stem = nn.Linear(self.hidden_dim, self.attn_dim)
+        self.mem_positions = nn.Parameter(torch.zeros(1, self.num_mem_tokens, self.attn_dim))
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=self.attn_dim,
+            nhead=self.num_heads,
+            dim_feedforward=max(self.attn_dim * 4, self.attn_dim),
+            dropout=dropout,
+            activation="gelu",
+            batch_first=True,
+            norm_first=True,
+        )
+        self.attn_trunk = nn.TransformerEncoder(encoder_layer, num_layers=self.num_attn_layers)
+        self.pool_query = nn.Parameter(torch.zeros(self.attn_dim))
+        self.pool_proj = nn.Linear(self.attn_dim * 3, self.attn_dim)
+
+        def _make_head() -> nn.Sequential:
+            layers: list[nn.Module] = []
+            in_dim = self.attn_dim
+            head_layers_local = max(1, int(head_layers))
+            for i in range(head_layers_local):
+                out_dim = self.embed_dim if i == head_layers_local - 1 else projector_hidden_dim
+                layers.append(nn.Linear(in_dim, out_dim))
+                if i < head_layers_local - 1:
+                    layers.append(nn.GELU())
+                    layers.append(nn.Dropout(dropout))
+                    layers.append(nn.LayerNorm(out_dim))
+                in_dim = out_dim
+            layers.append(nn.LayerNorm(self.embed_dim))
+            return nn.Sequential(*layers)
+
+        self.query_head = _make_head()
+        self.doc_head = _make_head()
+        self.logit_scale = nn.Parameter(torch.tensor(1.0))
+        self.reset_parameters()
+
+    def reset_parameters(self) -> None:
+        nn.init.normal_(self.mem_positions, std=0.02)
+        nn.init.normal_(self.pool_query, std=0.02)
+
+    def _pooled_features(self, mem_hiddens: torch.Tensor) -> torch.Tensor:
+        x = self.input_ln(mem_hiddens)
+        x = self.token_stem(x)
+        if x.size(1) == self.num_mem_tokens:
+            x = x + self.mem_positions
+        x = self.attn_trunk(x)
+        scores = torch.matmul(x, self.pool_query)
+        weights = torch.softmax(scores, dim=1).unsqueeze(-1)
+        attn_pooled = torch.sum(x * weights, dim=1)
+        mean_pooled = x.mean(dim=1)
+        max_pooled = x.max(dim=1).values
+        pooled = torch.cat([attn_pooled, mean_pooled, max_pooled], dim=-1)
+        return self.pool_proj(pooled)
+
+    def forward(self, mem_hiddens: torch.Tensor, mode: str = "doc") -> torch.Tensor:
+        pooled = self._pooled_features(mem_hiddens)
+        if mode == "query":
+            embeddings = self.query_head(pooled)
+        else:
+            embeddings = self.doc_head(pooled)
+        embeddings = embeddings * self.logit_scale.clamp(min=0.01, max=100.0)
+        return F.normalize(embeddings, p=2, dim=-1)
