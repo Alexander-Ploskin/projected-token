@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -46,6 +47,8 @@ def _config_to_argv(config: dict[str, Any]) -> list[str]:
         elif isinstance(value, list):
             args.append(flag)
             args.extend(str(v) for v in value)
+        elif isinstance(value, dict):
+            args.extend([flag, json.dumps(value, ensure_ascii=False)])
         else:
             args.extend([flag, str(value)])
     return args

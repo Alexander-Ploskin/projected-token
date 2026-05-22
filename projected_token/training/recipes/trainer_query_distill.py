@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import collections
 import glob
 import json
 import math
@@ -18,6 +19,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import WeightedRandomSampler
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 from transformers import AutoModel
@@ -58,8 +60,11 @@ class QueryDocH5Dataset(Dataset):
     def __init__(self, h5_paths: Sequence[str], split: str = "train", val_split: float = 0.05):
         self.h5_paths = [str(p) for p in h5_paths]
         self.files = [h5py.File(p, "r") for p in self.h5_paths]
+        self.file_sources = []
         self.index_map: list[tuple[int, int]] = []
         for fi, h5 in enumerate(self.files):
+            source_name = self._infer_file_source(Path(self.h5_paths[fi]))
+            self.file_sources.append(source_name)
             total = int(h5["query_embeddings"].shape[0])
             val_size = int(total * val_split)
             if val_split > 0 and total > 1:
@@ -68,6 +73,14 @@ class QueryDocH5Dataset(Dataset):
             index_range = range(0, train_size) if split == "train" else range(train_size, total)
             self.index_map.extend((fi, i) for i in index_range)
         print(f"Loaded query-doc {split} split: {len(self.index_map)} / files {[Path(p).name for p in self.h5_paths]}")
+
+    @staticmethod
+    def _infer_file_source(path: Path) -> str:
+        stem = path.stem.lower()
+        for candidate in ("msmarco", "fiqa", "quora", "nfcorpus", "scifact", "arguana"):
+            if candidate in stem:
+                return candidate
+        return stem
 
     def __len__(self) -> int:
         return len(self.index_map)
@@ -82,6 +95,7 @@ class QueryDocH5Dataset(Dataset):
             "query_target": torch.tensor(h5["query_embeddings"][row], dtype=torch.float32),
             "positive_target": torch.tensor(h5["positive_embeddings"][row], dtype=torch.float32),
             "negative_target": torch.tensor(h5["negative_embeddings"][row], dtype=torch.float32),
+            "source": self.file_sources[fi],
         }
 
     def close(self) -> None:
@@ -97,6 +111,7 @@ def collate_query_doc(batch: list[dict[str, Any]]) -> dict[str, Any]:
         "query_targets": torch.stack([x["query_target"] for x in batch]),
         "positive_targets": torch.stack([x["positive_target"] for x in batch]),
         "negative_targets": torch.stack([x["negative_target"] for x in batch]),
+        "sources": [x["source"] for x in batch],
     }
 
 
@@ -132,6 +147,7 @@ class QueryDistillationTrainer:
         beir_probe_negatives: int = 20,
         beir_probe_batch_size: int = 8,
         selection_metric: str = "beir_proxy_ndcg@10",
+        dataset_sampling_weights: dict[str, float] | None = None,
         device: str = "cuda:0",
         output_dir: str = "checkpoints/query_distill",
         log_dir: str = "logs/query_distill",
@@ -161,6 +177,7 @@ class QueryDistillationTrainer:
         self.beir_probe_negatives = int(beir_probe_negatives)
         self.beir_probe_batch_size = int(beir_probe_batch_size)
         self.selection_metric = str(selection_metric)
+        self.dataset_sampling_weights = {str(k): float(v) for k, v in (dataset_sampling_weights or {}).items()}
         self.output_dir = Path(output_dir)
         self.log_dir = Path(log_dir)
         self.run_root = self.output_dir.parent if self.output_dir.name == "checkpoints" else self.output_dir
@@ -191,10 +208,12 @@ class QueryDistillationTrainer:
         h5_paths = _resolve_h5_paths(teacher_embeddings_path)
         self.train_dataset = QueryDocH5Dataset(h5_paths, split="train", val_split=val_split)
         self.val_dataset = QueryDocH5Dataset(h5_paths, split="val", val_split=val_split)
+        train_sampler = self._build_weighted_sampler(self.train_dataset, self.dataset_sampling_weights)
         self.train_loader = DataLoader(
             self.train_dataset,
             batch_size=batch_size,
-            shuffle=True,
+            shuffle=train_sampler is None,
+            sampler=train_sampler,
             collate_fn=collate_query_doc,
             num_workers=4,
             pin_memory=True,
@@ -231,6 +250,7 @@ class QueryDistillationTrainer:
             "selection_metric": self.selection_metric,
             "projector_type": "mem",
             "training_objective": "query_doc_bge_distill",
+            "dataset_sampling_weights": self.dataset_sampling_weights,
         }
         self._beir_probe_cases = self._load_beir_probe_cases()
         self.load_checkpoint()
@@ -283,6 +303,51 @@ class QueryDistillationTrainer:
         for group in self.optimizer.param_groups:
             group["lr"] = lr
         return float(lr)
+
+    def _build_weighted_sampler(
+        self,
+        dataset: QueryDocH5Dataset,
+        sampling_weights: dict[str, float],
+    ) -> WeightedRandomSampler | None:
+        if not sampling_weights:
+            return None
+        weights = np.zeros(len(dataset.index_map), dtype=np.float64)
+        source_counts = collections.Counter()
+        unknown_sources: set[str] = set()
+        for idx, (fi, _row) in enumerate(dataset.index_map):
+            source = dataset.file_sources[fi]
+            source_counts[source] += 1
+            if source in sampling_weights:
+                weights[idx] = sampling_weights[source]
+            else:
+                unknown_sources.add(source)
+        if np.all(weights == 0):
+            print(
+                f"[sampling] no dataset_sampling_weights matched sources={sorted(source_counts.keys())}; falling back to shuffle",
+                flush=True,
+            )
+            return None
+        if unknown_sources:
+            print(
+                f"[sampling] sources without explicit weights={sorted(unknown_sources)}; assigned zero probability",
+                flush=True,
+            )
+        normalized = weights / max(weights.sum(), 1e-12)
+        print(
+            "[sampling] configured weights="
+            + ", ".join(f"{k}:{v}" for k, v in sorted(sampling_weights.items())),
+            flush=True,
+        )
+        print(
+            "[sampling] source counts="
+            + ", ".join(f"{k}:{source_counts[k]}" for k in sorted(source_counts.keys())),
+            flush=True,
+        )
+        return WeightedRandomSampler(
+            weights=torch.from_numpy(normalized),
+            num_samples=len(dataset.index_map),
+            replacement=True,
+        )
 
     def encode_texts(self, texts: list[str]) -> torch.Tensor:
         with torch.no_grad():
@@ -378,7 +443,7 @@ class QueryDistillationTrainer:
                     "ranking_active_frac",
                     "beir_probe_mrr@10",
                     "beir_probe_ndcg@10",
-                    "beir_proxy_ndcg@10",
+                    "beir_interquery_ndcg@10",
                     "beir_probe_recall@10",
                 )
                 if key in out
@@ -533,19 +598,19 @@ class QueryDistillationTrainer:
         mrr_at_10 = 0.0
         recall_at_10 = 0.0
         ndcg_at_10 = 0.0
-        proxy_mrr_at_10 = 0.0
-        proxy_recall_at_10 = 0.0
-        proxy_ndcg_at_10 = 0.0
+        interquery_mrr_at_10 = 0.0
+        interquery_recall_at_10 = 0.0
+        interquery_ndcg_at_10 = 0.0
         ranks: list[int] = []
-        proxy_ranks: list[int] = []
+        interquery_ranks: list[int] = []
         reciprocal_ranks: list[float] = []
         discounted_gains: list[float] = []
         for i, (start, stop) in enumerate(offsets):
             local_scores = similarities[i, start:stop]
             rank = int(np.where(np.argsort(-local_scores) == 0)[0][0]) + 1
-            proxy_rank = int(np.where(np.argsort(-similarities[i]) == start)[0][0]) + 1
+            interquery_rank = int(np.where(np.argsort(-similarities[i]) == start)[0][0]) + 1
             ranks.append(rank)
-            proxy_ranks.append(proxy_rank)
+            interquery_ranks.append(interquery_rank)
             reciprocal_ranks.append(1.0 / rank)
             discounted_gain = 1.0 / float(np.log2(rank + 1.0)) if rank <= 10 else 0.0
             discounted_gains.append(discounted_gain)
@@ -553,17 +618,17 @@ class QueryDistillationTrainer:
                 mrr_at_10 += 1.0 / rank
                 recall_at_10 += 1.0
                 ndcg_at_10 += discounted_gain
-            if proxy_rank <= 10:
-                proxy_mrr_at_10 += 1.0 / proxy_rank
-                proxy_recall_at_10 += 1.0
-                proxy_ndcg_at_10 += 1.0 / float(np.log2(proxy_rank + 1.0))
+            if interquery_rank <= 10:
+                interquery_mrr_at_10 += 1.0 / interquery_rank
+                interquery_recall_at_10 += 1.0
+                interquery_ndcg_at_10 += 1.0 / float(np.log2(interquery_rank + 1.0))
         denom = max(1, len(offsets))
         pos_mean = float(np.mean(pos_cos))
         neg_mean = float(np.mean(neg_cos))
         gaps = pos_cos - neg_cos
         gap_mean = float(np.mean(gaps))
         rank_arr = np.asarray(ranks, dtype=np.float32)
-        proxy_rank_arr = np.asarray(proxy_ranks, dtype=np.float32)
+        interquery_rank_arr = np.asarray(interquery_ranks, dtype=np.float32)
         rr_arr = np.asarray(reciprocal_ranks, dtype=np.float32)
         ndcg_arr = np.asarray(discounted_gains, dtype=np.float32)
         datasets = [str(case.get("dataset", "beir")) for case in self._beir_probe_cases]
@@ -573,11 +638,11 @@ class QueryDistillationTrainer:
             if indices.size == 0:
                 continue
             ds_ranks = rank_arr[indices]
-            ds_proxy_ranks = proxy_rank_arr[indices]
+            ds_interquery_ranks = interquery_rank_arr[indices]
             ds_rr = rr_arr[indices]
             ds_ndcg = ndcg_arr[indices]
             ds_recall_at_10 = float(np.mean(ds_ranks <= 10))
-            ds_proxy_recall_at_10 = float(np.mean(ds_proxy_ranks <= 10))
+            ds_interquery_recall_at_10 = float(np.mean(ds_interquery_ranks <= 10))
             dataset_summaries[dataset_name] = {
                 "cases": float(indices.size),
                 "pos_cosine_mean": float(np.mean(pos_cos[indices])),
@@ -586,16 +651,16 @@ class QueryDistillationTrainer:
                 "gap_std": float(np.std(gaps[indices])),
                 "rank_mean": float(np.mean(ds_ranks)),
                 "rank_median": float(np.median(ds_ranks)),
-                "proxy_rank_mean": float(np.mean(ds_proxy_ranks)),
-                "proxy_rank_median": float(np.median(ds_proxy_ranks)),
+                "interquery_rank_mean": float(np.mean(ds_interquery_ranks)),
+                "interquery_rank_median": float(np.median(ds_interquery_ranks)),
                 "mrr": float(np.mean(ds_rr)),
                 "mrr@10": float(np.mean(np.where(ds_ranks <= 10, ds_rr, 0.0))),
                 "ndcg@10": float(np.mean(ds_ndcg)),
                 "recall@10": ds_recall_at_10,
-                "proxy_ndcg@10": float(
-                    np.mean(np.where(ds_proxy_ranks <= 10, 1.0 / np.log2(ds_proxy_ranks + 1.0), 0.0))
+                "interquery_ndcg@10": float(
+                    np.mean(np.where(ds_interquery_ranks <= 10, 1.0 / np.log2(ds_interquery_ranks + 1.0), 0.0))
                 ),
-                "proxy_recall@10": ds_proxy_recall_at_10,
+                "interquery_recall@10": ds_interquery_recall_at_10,
             }
         fig, ax = plt.subplots(figsize=(12, 5))
         x = np.arange(len(pos_cos))
@@ -638,7 +703,7 @@ class QueryDistillationTrainer:
                         "query_id": self._beir_probe_cases[i].get("query_id", ""),
                         "positive_doc_id": self._beir_probe_cases[i].get("positive_doc_id", ""),
                         "rank": int(ranks[i]),
-                        "proxy_rank": int(proxy_ranks[i]),
+                        "interquery_rank": int(interquery_ranks[i]),
                         "pos_cosine": float(pos_cos[i]),
                         "neg_cosine": float(neg_cos[i]),
                         "gap": float(gaps[i]),
@@ -661,7 +726,7 @@ class QueryDistillationTrainer:
             f"rank_mean={float(rank_arr.mean()) if len(rank_arr) else 0.0:.6f} "
             f"rank_median={float(np.median(rank_arr)) if len(rank_arr) else 0.0:.6f} "
             f"mrr@10={mrr_at_10 / denom:.6f} ndcg@10={ndcg_at_10 / denom:.6f} "
-            f"proxy_ndcg@10={proxy_ndcg_at_10 / denom:.6f} "
+            f"interquery_ndcg@10={interquery_ndcg_at_10 / denom:.6f} "
             f"r@10={recall_at_10 / denom:.6f} plot={fig_path}",
             flush=True,
         )
@@ -684,17 +749,17 @@ class QueryDistillationTrainer:
                 "rank_median": float(np.median(rank_arr)) if len(rank_arr) else 0.0,
                 "rank_min": int(rank_arr.min()) if len(rank_arr) else 0,
                 "rank_max": int(rank_arr.max()) if len(rank_arr) else 0,
-                "proxy_rank_mean": float(proxy_rank_arr.mean()) if len(proxy_rank_arr) else 0.0,
-                "proxy_rank_median": float(np.median(proxy_rank_arr)) if len(proxy_rank_arr) else 0.0,
-                "proxy_rank_min": int(proxy_rank_arr.min()) if len(proxy_rank_arr) else 0,
-                "proxy_rank_max": int(proxy_rank_arr.max()) if len(proxy_rank_arr) else 0,
+                "interquery_rank_mean": float(interquery_rank_arr.mean()) if len(interquery_rank_arr) else 0.0,
+                "interquery_rank_median": float(np.median(interquery_rank_arr)) if len(interquery_rank_arr) else 0.0,
+                "interquery_rank_min": int(interquery_rank_arr.min()) if len(interquery_rank_arr) else 0,
+                "interquery_rank_max": int(interquery_rank_arr.max()) if len(interquery_rank_arr) else 0,
                 "mrr": float(rr_arr.mean()) if len(rr_arr) else 0.0,
                 "mrr@10": mrr_at_10 / denom,
                 "ndcg@10": ndcg_at_10 / denom,
                 "recall@10": recall_at_10 / denom,
-                "proxy_mrr@10": proxy_mrr_at_10 / denom,
-                "proxy_ndcg@10": proxy_ndcg_at_10 / denom,
-                "proxy_recall@10": proxy_recall_at_10 / denom,
+                "interquery_mrr@10": interquery_mrr_at_10 / denom,
+                "interquery_ndcg@10": interquery_ndcg_at_10 / denom,
+                "interquery_recall@10": interquery_recall_at_10 / denom,
             },
             "datasets": dataset_summaries,
             "cases": [
@@ -702,7 +767,7 @@ class QueryDistillationTrainer:
                     "idx": int(i),
                     "dataset": self._beir_probe_cases[i].get("dataset", "beir"),
                     "rank": int(ranks[i]),
-                    "proxy_rank": int(proxy_ranks[i]),
+                    "interquery_rank": int(interquery_ranks[i]),
                     "pos_cosine": float(pos_cos[i]),
                     "neg_cosine": float(neg_cos[i]),
                     "gap": float(gaps[i]),
@@ -732,16 +797,21 @@ class QueryDistillationTrainer:
             "beir_probe_rank_median": float(np.median(rank_arr)) if len(rank_arr) else 0.0,
             "beir_probe_rank_min": float(rank_arr.min()) if len(rank_arr) else 0.0,
             "beir_probe_rank_max": float(rank_arr.max()) if len(rank_arr) else 0.0,
-            "beir_probe_proxy_rank_mean": float(proxy_rank_arr.mean()) if len(proxy_rank_arr) else 0.0,
-            "beir_probe_proxy_rank_median": float(np.median(proxy_rank_arr)) if len(proxy_rank_arr) else 0.0,
-            "beir_probe_proxy_rank_min": float(proxy_rank_arr.min()) if len(proxy_rank_arr) else 0.0,
-            "beir_probe_proxy_rank_max": float(proxy_rank_arr.max()) if len(proxy_rank_arr) else 0.0,
+            "beir_probe_interquery_rank_mean": float(interquery_rank_arr.mean()) if len(interquery_rank_arr) else 0.0,
+            "beir_probe_interquery_rank_median": float(np.median(interquery_rank_arr)) if len(interquery_rank_arr) else 0.0,
+            "beir_probe_interquery_rank_min": float(interquery_rank_arr.min()) if len(interquery_rank_arr) else 0.0,
+            "beir_probe_interquery_rank_max": float(interquery_rank_arr.max()) if len(interquery_rank_arr) else 0.0,
             "beir_probe_mrr@10": mrr_at_10 / denom,
             "beir_probe_ndcg@10": ndcg_at_10 / denom,
             "beir_probe_recall@10": recall_at_10 / denom,
-            "beir_proxy_mrr@10": proxy_mrr_at_10 / denom,
-            "beir_proxy_ndcg@10": proxy_ndcg_at_10 / denom,
-            "beir_proxy_recall@10": proxy_recall_at_10 / denom,
+            "beir_interquery_mrr@10": interquery_mrr_at_10 / denom,
+            "beir_interquery_ndcg@10": interquery_ndcg_at_10 / denom,
+            "beir_interquery_recall@10": interquery_recall_at_10 / denom,
+            # Backward-compatible alias used for selection. This is a sampled
+            # cross-query candidate-pool metric, not full-corpus retrieval.
+            "beir_proxy_mrr@10": interquery_mrr_at_10 / denom,
+            "beir_proxy_ndcg@10": interquery_ndcg_at_10 / denom,
+            "beir_proxy_recall@10": interquery_recall_at_10 / denom,
         }
         for dataset_name, summary in dataset_summaries.items():
             metric_prefix = "beir_probe_" + re.sub(r"[^A-Za-z0-9_.-]+", "_", dataset_name)
@@ -755,7 +825,7 @@ class QueryDistillationTrainer:
             return float(metrics[self.selection_metric])
         if self.selection_metric == "gap" and "gap" in metrics:
             return float(metrics["gap"])
-        fallback_keys = ("beir_proxy_ndcg@10", "beir_probe_ndcg@10", "beir_probe_mrr@10", "gap")
+        fallback_keys = ("beir_probe_ndcg@10", "beir_probe_mrr@10", "beir_interquery_ndcg@10", "gap")
         for key in fallback_keys:
             if key in metrics:
                 print(
@@ -817,6 +887,15 @@ class QueryDistillationTrainer:
                     self.writer.add_scalar("train/grad_norm", float(grad_norm), global_step)
                     self.writer.add_scalar("train/micro_step", micro_step, global_step)
                     self.writer.add_scalar("train/gradient_accumulation_steps", self.gradient_accumulation_steps, global_step)
+                    if "sources" in batch:
+                        source_counts = collections.Counter(batch["sources"])
+                        total_in_batch = max(1, len(batch["sources"]))
+                        for source_name, count in source_counts.items():
+                            self.writer.add_scalar(
+                                f"train/source_fraction/{source_name}",
+                                float(count) / float(total_in_batch),
+                                global_step,
+                            )
                 if should_step and val_every_n_steps > 0 and global_step % val_every_n_steps == 0:
                     val_metrics = self.validate(global_step)
                     score = self._selection_score(val_metrics)
@@ -877,6 +956,7 @@ def main() -> None:
     parser.add_argument("--beir-probe-negatives", type=int, default=20)
     parser.add_argument("--beir-probe-batch-size", type=int, default=8)
     parser.add_argument("--selection-metric", default="beir_proxy_ndcg@10")
+    parser.add_argument("--dataset-sampling-weights", default=None)
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--val-every", type=int, default=1000)
     parser.add_argument("--early-stopping-patience", type=int, default=0)
@@ -887,6 +967,8 @@ def main() -> None:
     args = parser.parse_args()
 
     config_lock = vars(args).copy()
+    if args.dataset_sampling_weights:
+        config_lock["dataset_sampling_weights"] = json.loads(args.dataset_sampling_weights)
     config_lock["teacher_embeddings"] = list(args.teacher_embeddings)
     config_lock["recipe"] = "query_distill"
     write_config_lock(config_lock, Path(args.output_dir).parent / "config.lock.yaml")
@@ -919,6 +1001,7 @@ def main() -> None:
         beir_probe_negatives=args.beir_probe_negatives,
         beir_probe_batch_size=args.beir_probe_batch_size,
         selection_metric=args.selection_metric,
+        dataset_sampling_weights=json.loads(args.dataset_sampling_weights) if args.dataset_sampling_weights else None,
         device=args.device,
         output_dir=args.output_dir,
         log_dir=args.log_dir,

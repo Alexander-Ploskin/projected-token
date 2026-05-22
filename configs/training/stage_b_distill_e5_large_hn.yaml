@@ -18,9 +18,14 @@ temperature: 0.02
 margin: 0.1
 hard_negative_weight: 0.2
 hard_negative_margin: 0.05
-selection_metric: proxy_ndcg@10
+selection_metric: ndcg@10
 proxy_eval_every_n_steps: 0
 proxy_eval_config:
+async_validation: true
+async_validation_device: cuda:2
+async_validation_max_pending: 1
 epochs: 30
 val_split: 0.05
+val_every: 1000
+early_stopping_patience: 0
 device: cuda:0

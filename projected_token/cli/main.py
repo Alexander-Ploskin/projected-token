@@ -315,6 +315,12 @@ def data_query_doc_teacher_embeddings(ctx: click.Context) -> None:
     _run_recipe_module("projected_token.data.recipes.generate_query_doc_teacher_embeddings", tuple(ctx.args))
 
 
+@data.command(context_settings={"ignore_unknown_options": True, "allow_extra_args": True}, name="query-distill-teacher-bundle")
+@click.pass_context
+def data_query_distill_teacher_bundle(ctx: click.Context) -> None:
+    _run_recipe_module("projected_token.data.recipes.generate_query_distill_teacher_bundle", tuple(ctx.args))
+
+
 @data.command(context_settings={"ignore_unknown_options": True, "allow_extra_args": True}, name="teacher-embeddings")
 @click.pass_context
 def data_teacher_embeddings(ctx: click.Context) -> None:

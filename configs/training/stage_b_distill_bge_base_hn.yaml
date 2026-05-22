@@ -1,8 +1,8 @@
 recipe: distill
-run_id: stage-b-distill-bge-base-hn
+run_id: stage-b-distill-bge-base-hn-msmarco100k
 oscar_model: naver/oscar-qwen2-7B
 teacher_embeddings:
-  - data/teacher-embeddings/bge-base-en-v1.5_teacher_embeddings_mixed.h5
+  - /data/teacher-embeddings/bge-base-en-v1.5_teacher_embeddings_msmarco_100k.h5
 embed_dim: 768
 pooler: mean
 dropout: 0.0
@@ -18,7 +18,7 @@ temperature: 0.02
 margin: 0.1
 hard_negative_weight: 0.2
 hard_negative_margin: 0.05
-selection_metric: proxy_ndcg@10
+selection_metric: ndcg@10
 proxy_eval_every_n_steps: 0
 proxy_eval_config:
 epochs: 30
