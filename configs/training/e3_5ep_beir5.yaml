@@ -3,13 +3,12 @@ run_id: e3-5ep-beir5-noquora-dual-head-candidate
 run_base_dir: artifacts/query_distill_runs_dual_head
 oscar_model: naver/oscar-qwen2-7B
 teacher_embeddings:
-  - artifacts/teacher-embeddings/query-doc-bge-base-candidates/scifact-train-candidates.h5
-  - artifacts/teacher-embeddings/query-doc-bge-base-candidates/nfcorpus-train-candidates.h5
-  - artifacts/teacher-embeddings/query-doc-bge-base-candidates/fiqa-train-candidates.h5
-  - artifacts/teacher-embeddings/query-doc-bge-base-candidates/arguana-train-candidates.h5
-  - artifacts/teacher-embeddings/query-doc-bge-base-candidates/trec-covid-train-candidates.h5
-  - artifacts/teacher-embeddings/query-doc-bge-base-candidates/msmarco-candidates.h5
-  - artifacts/teacher-embeddings/query-doc-bge-base-candidates/quora-train-candidates.h5
+  - artifacts/teacher-embeddings/query-doc-bge-base-candidates/scifact-train-hard.h5
+  - artifacts/teacher-embeddings/query-doc-bge-base-candidates/nfcorpus-train-hard.h5
+  - artifacts/teacher-embeddings/query-doc-bge-base-candidates/fiqa-train-hard.h5
+  - artifacts/teacher-embeddings/query-doc-bge-base-candidates/arguana-train-hard.h5
+  - artifacts/teacher-embeddings/query-doc-bge-base-candidates/msmarco-hard.h5
+  - artifacts/teacher-embeddings/query-doc-bge-base-candidates/quora-train-hard.h5
 embed_dim: 768
 pooler: flatten
 projector_type: dual_head
@@ -48,7 +47,7 @@ beir_probe_samples: 120
 beir_probe_samples_per_dataset: 120
 beir_probe_negatives: 50
 beir_probe_batch_size: 8
-beir_mini_eval_config: configs/retrieval/beir_mini_scifact.yaml
+beir_mini_eval_config: configs/retrieval/beir_mini_3.yaml
 beir_mini_eval_every: 1000
 beir_full_eval_config: configs/retrieval/beir5_stage_b_no_quora.yaml
 beir_full_eval_every: 1000

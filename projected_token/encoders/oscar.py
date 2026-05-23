@@ -1,5 +1,5 @@
 import torch
-from typing import List, Optional
+from typing import List, Optional, Any
 from pathlib import Path
 from transformers import AutoModel
 
@@ -202,6 +202,7 @@ class OscarProjectorEncoder(Encoder):
         num_layers: int = 2,
         dropout: float = 0.1,
         projector_hidden_dim: Optional[int] = None,
+        oscar_model_instance: Any = None,
     ) -> None:
         """
         Args:
@@ -222,13 +223,16 @@ class OscarProjectorEncoder(Encoder):
         disable_resume_download_passthrough()
         device_map = device if device != "cpu" else "cpu"
         
-        self._oscar_model = AutoModel.from_pretrained(
-            oscar_model_name,
-            torch_dtype=torch_dtype,
-            trust_remote_code=trust_remote_code,
-            device_map=device_map,
-        ).eval()
-        configure_oscar_component_devices(self._oscar_model)
+        if oscar_model_instance is not None:
+            self._oscar_model = oscar_model_instance
+        else:
+            self._oscar_model = AutoModel.from_pretrained(
+                oscar_model_name,
+                torch_dtype=torch_dtype,
+                trust_remote_code=trust_remote_code,
+                device_map=device_map,
+            ).eval()
+            configure_oscar_component_devices(self._oscar_model)
         
         if hasattr(self._oscar_model, 'compr') and hasattr(self._oscar_model.compr, 'config'):
             self._oscar_model.compr.config.mean_resizing = False
@@ -377,7 +381,7 @@ class OscarProjectorEncoder(Encoder):
                 documents=valid_docs,
                 questions=None,
             )
-            compressed = compressed.detach()
+            compressed = compressed.detach().to(self._device)
             if self._projector_type in {"token_dual", "dual_head"} and questions is not None:
                 embeddings = self._projector(compressed, mode="query")
             elif self._projector_type in {"token_dual", "dual_head"}:
@@ -419,7 +423,7 @@ class OscarProjectorEncoder(Encoder):
                 documents=valid_docs,
                 questions=None,
             )
-            compressed = compressed.detach()
+            compressed = compressed.detach().to(self._device)
             if self._projector_type in {"token_dual", "dual_head"} and questions is not None:
                 embeddings = self._projector(compressed, mode="query")
             elif self._projector_type in {"token_dual", "dual_head"}:

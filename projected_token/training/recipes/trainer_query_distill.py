@@ -430,6 +430,12 @@ class QueryDistillationTrainer:
         )
 
     def _step_lr(self, step: int) -> float:
+        if self.max_steps <= 0 and self.scheduler_name not in {"legacy", "none"}:
+            if hasattr(self, "train_loader") and hasattr(self, "gradient_accumulation_steps"):
+                epochs = self.projector_config.get("epochs", 1)
+                self.max_steps = int(epochs * len(self.train_loader) / self.gradient_accumulation_steps)
+                print(f"[schedule] auto-calculated max_steps={self.max_steps} from {epochs} epochs", flush=True)
+
         if self.max_steps <= 0 or self.scheduler_name in {"legacy", "none"}:
             return float(self.optimizer.param_groups[0]["lr"])
         if self.warmup_steps > 0 and step <= self.warmup_steps:
@@ -514,7 +520,6 @@ class QueryDistillationTrainer:
     ) -> torch.Tensor:
         student_logits = torch.cat(
             [
-                torch.sum(q * p, dim=-1, keepdim=True),
                 torch.sum(q * n, dim=-1, keepdim=True),
                 torch.matmul(q, p.T),
             ],
@@ -522,7 +527,6 @@ class QueryDistillationTrainer:
         ) / max(self.temperature, 1e-6)
         teacher_logits = torch.cat(
             [
-                torch.sum(q_t * p_t, dim=-1, keepdim=True),
                 torch.sum(q_t * n_t, dim=-1, keepdim=True),
                 torch.matmul(q_t, p_t.T),
             ],
@@ -943,7 +947,15 @@ class QueryDistillationTrainer:
             return {}
         checkpoint_path = self.output_dir / f"checkpoint_step_{step}.pt"
         if not checkpoint_path.exists():
-            return {}
+            torch.save(
+                {
+                    "step": int(step),
+                    "metrics": {},
+                    "model_state_dict": self.projector.state_dict(),
+                    "config": self.projector_config,
+                },
+                checkpoint_path,
+            )
         start_time = time.perf_counter()
         cfg = json.loads(json.dumps(template))
         eval_encoder_device = os.getenv("BEIR_PIPELINE_A_DEVICE", str(self.device))
@@ -959,6 +971,7 @@ class QueryDistillationTrainer:
             "num_layers": int(self.projector_config.get("num_layers", 2)),
             "dropout": float(self.projector_config.get("dropout", 0.0)),
             "projector_hidden_dim": int(self.projector_config.get("projector_hidden_dim", 8192)),
+            "oscar_model_instance": self.oscar_model,
         }
         prev_decoder = os.environ.get("OSCAR_DECODER_DEVICE")
         prev_compressor = os.environ.get("OSCAR_COMPRESSOR_DEVICE")
@@ -1288,17 +1301,6 @@ class QueryDistillationTrainer:
         return best_score, validations_without_improvement, False
 
     def _run_mini_eval_only(self, step: int) -> None:
-        checkpoint_path = self.output_dir / f"checkpoint_step_{step}.pt"
-        if not checkpoint_path.exists():
-            torch.save(
-                {
-                    "step": int(step),
-                    "metrics": {},
-                    "model_state_dict": self.projector.state_dict(),
-                    "config": self.projector_config,
-                },
-                checkpoint_path,
-            )
         metrics = self.run_beir_eval(step, self.beir_mini_eval_config, "beir_mini")
         if not metrics:
             return
@@ -1342,6 +1344,7 @@ class QueryDistillationTrainer:
             best_score = self._selection_score(val_metrics)
         validations_without_improvement = 0
         self.optimizer.zero_grad(set_to_none=True)
+        reached_max_steps = False
         for epoch in range(1, num_epochs + 1):
             self.projector.train()
             pbar = tqdm(self.train_loader, desc=f"Epoch {epoch}")
@@ -1387,6 +1390,7 @@ class QueryDistillationTrainer:
                                 global_step,
                             )
                 if should_step and val_every_n_steps > 0 and global_step % val_every_n_steps == 0:
+                    print(f"[schedule] step={global_step} running validation checkpoint", flush=True)
                     best_score, validations_without_improvement, should_stop = self._validate_and_checkpoint(
                         step=global_step,
                         best_score=best_score,
@@ -1405,13 +1409,13 @@ class QueryDistillationTrainer:
                     and global_step > 0
                     and global_step % self.beir_mini_eval_every == 0
                 ):
+                    print(f"[schedule] step={global_step} running mini BEIR only", flush=True)
                     self._run_mini_eval_only(global_step)
                     self.projector.train()
                 if self.max_steps > 0 and global_step >= self.max_steps:
-                    self.writer.close()
-                    self.train_dataset.close()
-                    self.val_dataset.close()
-                    return
+                    reached_max_steps = True
+                    print(f"[schedule] reached max_steps={self.max_steps} at epoch={epoch} step={global_step}", flush=True)
+                    break
             if global_step > 0:
                 print(f"[epoch-end] epoch={epoch} step={global_step} running forced BEIR full eval", flush=True)
                 best_score, validations_without_improvement, should_stop = self._validate_and_checkpoint(
@@ -1427,6 +1431,9 @@ class QueryDistillationTrainer:
                     self.val_dataset.close()
                     return
                 self.projector.train()
+            if reached_max_steps:
+                print(f"[schedule] stopping after epoch-end eval at step={global_step}", flush=True)
+                break
         self.writer.close()
         self.train_dataset.close()
         self.val_dataset.close()

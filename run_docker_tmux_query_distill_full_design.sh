@@ -94,21 +94,10 @@ export BEIR_PIPELINE_A_DEVICE="${BEIR_PIPELINE_A_DEVICE_VALUE:-cuda:1}"
 export BEIR_PIPELINE_B_DEVICE="${BEIR_PIPELINE_B_DEVICE_VALUE:-cuda:2}"
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF_VALUE:-expandable_segments:True}"
 echo "[START] $(date -Is) train_config=${TRAIN_CONFIG_PATH} hf_token_set=$( [ -n "${HF_TOKEN:-}" ] && echo yes || echo no )" | tee -a "${PIPELINE_LOG_CONT}"
-teacher_files=(
-  "${TEACHER_OUT_DIR}/msmarco-hard.h5"
-  "${TEACHER_OUT_DIR}/nfcorpus-train-hard.h5"
-  "${TEACHER_OUT_DIR}/fiqa-train-hard.h5"
-  "${TEACHER_OUT_DIR}/arguana-train-hard.h5"
-  "${TEACHER_OUT_DIR}/quora-train-hard.h5"
-  "${TEACHER_OUT_DIR}/scifact-train-hard.h5"
-)
 missing=0
-for f in "${teacher_files[@]}"; do
-  if [[ ! -s "${f}" ]]; then
-    missing=1
-    break
-  fi
-done
+if [[ ! -d "${TEACHER_OUT_DIR}" ]] || [[ -z "$(ls -A "${TEACHER_OUT_DIR}"/*.h5 2>/dev/null)" ]]; then
+  missing=1
+fi
 if [[ "${SKIP_TEACHER_IF_EXISTS:-1}" == "1" && "${missing}" == "0" ]]; then
   echo "[cache] teacher embeddings found; skipping generation" | tee -a "${PIPELINE_LOG_CONT}"
 else

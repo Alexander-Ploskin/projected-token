@@ -115,7 +115,12 @@ def _load_beir_dataset(
 
 
 def _encoder_fingerprint(encoder_cfg: dict[str, Any]) -> str:
-    payload = json.dumps(encoder_cfg, sort_keys=True, ensure_ascii=True)
+    cfg_copy = dict(encoder_cfg)
+    if "kwargs" in cfg_copy:
+        kwargs_copy = dict(cfg_copy["kwargs"])
+        kwargs_copy.pop("oscar_model_instance", None)
+        cfg_copy["kwargs"] = kwargs_copy
+    payload = json.dumps(cfg_copy, sort_keys=True, ensure_ascii=True)
     return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:10]
 
 

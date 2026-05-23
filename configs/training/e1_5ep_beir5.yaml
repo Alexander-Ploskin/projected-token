@@ -1,5 +1,6 @@
 recipe: query_distill
 run_id: e1-5ep-beir5-noquora
+resume_checkpoint: artifacts/query_distill_runs/e1-5ep-beir5-noquora/checkpoints/checkpoint_step_1750.pt
 run_base_dir: artifacts/query_distill_runs
 oscar_model: naver/oscar-qwen2-7B
 teacher_embeddings:
@@ -21,6 +22,11 @@ min_lr: 1.0e-6
 epochs: 5
 warmup_steps: 1000
 scheduler: cosine
+stage1_steps: 1500
+stage1_query_mse_weight: 0.5
+stage1_doc_mse_weight: 0.5
+stage1_negative_mse_weight: 0.1
+stage2_negative_mse_weight: 0.05
 query_mse_weight: 1.0
 doc_mse_weight: 1.0
 negative_mse_weight: 0.5
