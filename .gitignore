@@ -222,3 +222,8 @@ artifacts/**
 !artifacts/manifest.json
 *_results.json
 *metrics.json
+.hf-home/
+.hf-hub/
+.hf_home/
+.hf_hub/
+data/
