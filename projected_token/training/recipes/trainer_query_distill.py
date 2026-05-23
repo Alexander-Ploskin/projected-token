@@ -29,7 +29,11 @@ from projected_token.artifacts import write_config_lock
 from projected_token.config import load_yaml
 from projected_token.encoders.projector import MEMProjector, DualHeadMEMProjector, TokenAwareDualProjector
 from projected_token.retrieval.beir import evaluate_beir
-from projected_token.oscar_runtime import disable_transformers_allocator_warmup, configure_oscar_component_devices
+from projected_token.oscar_runtime import (
+    disable_resume_download_passthrough,
+    disable_transformers_allocator_warmup,
+    configure_oscar_component_devices,
+)
 
 
 def _resolve_h5_paths(paths_or_patterns: Union[str, Sequence[str]]) -> list[str]:
@@ -268,6 +272,7 @@ class QueryDistillationTrainer:
         self.val_history: list[dict[str, float]] = self._load_val_history()
 
         disable_transformers_allocator_warmup()
+        disable_resume_download_passthrough()
         print(f"Loading OSCAR model: {oscar_model_name}")
         self.oscar_model = AutoModel.from_pretrained(
             oscar_model_name,
@@ -941,19 +946,39 @@ class QueryDistillationTrainer:
             return {}
         start_time = time.perf_counter()
         cfg = json.loads(json.dumps(template))
+        eval_encoder_device = os.getenv("BEIR_PIPELINE_A_DEVICE", str(self.device))
+        eval_decoder_device = os.getenv("BEIR_PIPELINE_B_DEVICE", os.getenv("OSCAR_DECODER_DEVICE", eval_encoder_device))
         cfg.setdefault("encoder", {})
         cfg["encoder"]["name"] = "oscar_projector"
         cfg["encoder"]["kwargs"] = {
             "oscar_model_name": self.oscar_model_name,
             "projector_path": str(checkpoint_path),
-            "device": str(self.device),
+            "device": str(eval_encoder_device),
             "embed_dim": int(self.projector_config.get("embed_dim", 768)),
             "pooler": str(self.projector_config.get("pooler", "flatten")),
             "num_layers": int(self.projector_config.get("num_layers", 2)),
             "dropout": float(self.projector_config.get("dropout", 0.0)),
             "projector_hidden_dim": int(self.projector_config.get("projector_hidden_dim", 8192)),
         }
-        summary = evaluate_beir(cfg)
+        prev_decoder = os.environ.get("OSCAR_DECODER_DEVICE")
+        prev_compressor = os.environ.get("OSCAR_COMPRESSOR_DEVICE")
+        os.environ["OSCAR_DECODER_DEVICE"] = str(eval_decoder_device)
+        os.environ["OSCAR_COMPRESSOR_DEVICE"] = str(eval_encoder_device)
+        try:
+            summary = evaluate_beir(cfg)
+        finally:
+            if prev_decoder is None:
+                os.environ.pop("OSCAR_DECODER_DEVICE", None)
+            else:
+                os.environ["OSCAR_DECODER_DEVICE"] = prev_decoder
+            if prev_compressor is None:
+                os.environ.pop("OSCAR_COMPRESSOR_DEVICE", None)
+            else:
+                os.environ["OSCAR_COMPRESSOR_DEVICE"] = prev_compressor
+        print(
+            f"[{prefix}] devices encoder={eval_encoder_device} decoder={eval_decoder_device}",
+            flush=True,
+        )
         print(f"[{prefix}] step={step} elapsed_sec={time.perf_counter() - start_time:.1f}", flush=True)
         metrics: dict[str, float] = {}
         avg = summary.get("average", {})
@@ -1262,6 +1287,34 @@ class QueryDistillationTrainer:
             return best_score, validations_without_improvement, True
         return best_score, validations_without_improvement, False
 
+    def _run_mini_eval_only(self, step: int) -> None:
+        checkpoint_path = self.output_dir / f"checkpoint_step_{step}.pt"
+        if not checkpoint_path.exists():
+            torch.save(
+                {
+                    "step": int(step),
+                    "metrics": {},
+                    "model_state_dict": self.projector.state_dict(),
+                    "config": self.projector_config,
+                },
+                checkpoint_path,
+            )
+        metrics = self.run_beir_eval(step, self.beir_mini_eval_config, "beir_mini")
+        if not metrics:
+            return
+        print(
+            f"[mini-eval] step={step} "
+            + " ".join(
+                f"{k}={v:.6f}"
+                for k, v in metrics.items()
+                if k.endswith("ndcg@10") or k.endswith("mrr@10") or k.endswith("recall@10")
+            ),
+            flush=True,
+        )
+        for key, value in metrics.items():
+            self.writer.add_scalar(f"val/{key}", value, step)
+        self.writer.flush()
+
     def train(self, num_epochs: int, val_every_n_steps: int, early_stopping_patience: int = 0) -> None:
         print(f"\n{'=' * 60}")
         target = f"{self.max_steps} steps" if self.max_steps > 0 else f"{num_epochs} epochs"
@@ -1345,6 +1398,14 @@ class QueryDistillationTrainer:
                         self.train_dataset.close()
                         self.val_dataset.close()
                         return
+                    self.projector.train()
+                elif (
+                    should_step
+                    and self.beir_mini_eval_every > 0
+                    and global_step > 0
+                    and global_step % self.beir_mini_eval_every == 0
+                ):
+                    self._run_mini_eval_only(global_step)
                     self.projector.train()
                 if self.max_steps > 0 and global_step >= self.max_steps:
                     self.writer.close()

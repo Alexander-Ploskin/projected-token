@@ -35,6 +35,40 @@ def disable_transformers_allocator_warmup() -> None:
     modeling_utils._projected_token_warmup_disabled = True
 
 
+def disable_resume_download_passthrough() -> None:
+    """Patch AutoModel loaders to ignore legacy `resume_download` kwargs.
+
+    Some remote OSCAR model code forwards `resume_download` to nested model
+    loaders. Recent Transformers versions can propagate this keyword all the
+    way into model constructors, causing:
+      `TypeError: ... got an unexpected keyword argument 'resume_download'`.
+    """
+    try:
+        from transformers import AutoModel, AutoModelForCausalLM
+    except Exception:
+        return
+
+    if getattr(AutoModel, "_projected_token_resume_download_patched", False):
+        return
+
+    orig_auto_from_pretrained = AutoModel.from_pretrained
+    orig_causal_from_pretrained = AutoModelForCausalLM.from_pretrained
+
+    @classmethod
+    def _patched_auto_from_pretrained(cls, pretrained_model_name_or_path, *model_args, **kwargs):
+        kwargs.pop("resume_download", None)
+        return orig_auto_from_pretrained.__func__(cls, pretrained_model_name_or_path, *model_args, **kwargs)
+
+    @classmethod
+    def _patched_causal_from_pretrained(cls, pretrained_model_name_or_path, *model_args, **kwargs):
+        kwargs.pop("resume_download", None)
+        return orig_causal_from_pretrained.__func__(cls, pretrained_model_name_or_path, *model_args, **kwargs)
+
+    AutoModel.from_pretrained = _patched_auto_from_pretrained
+    AutoModelForCausalLM.from_pretrained = _patched_causal_from_pretrained
+    AutoModel._projected_token_resume_download_patched = True
+
+
 def _module_device(module: Any) -> torch.device:
     for param in module.parameters():
         return param.device

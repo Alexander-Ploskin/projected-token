@@ -16,7 +16,7 @@ split: test
 search_k: 100
 datasets:
   - name: scifact
-    path: data/beir/scifact
+    path: /data/beir/scifact
 metrics:
   top_k: [1, 3, 5, 10, 20]
   output_path: artifacts/results/retrieval/beir_mini_scifact/summary.json

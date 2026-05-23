@@ -5,7 +5,11 @@ from transformers import AutoModel
 
 from projected_token.encoders import Encoder
 from projected_token.encoders.projector import MEMProjector, DistillationProjector, DualHeadMEMProjector, TokenAwareDualProjector
-from projected_token.oscar_runtime import disable_transformers_allocator_warmup, configure_oscar_component_devices
+from projected_token.oscar_runtime import (
+    disable_resume_download_passthrough,
+    disable_transformers_allocator_warmup,
+    configure_oscar_component_devices,
+)
 
 
 class OscarEncoder(Encoder):
@@ -42,6 +46,7 @@ class OscarEncoder(Encoder):
         self._aggregation = aggregation
         
         disable_transformers_allocator_warmup()
+        disable_resume_download_passthrough()
         device_map = device if device != "cpu" else "cpu"
         
         self._model = AutoModel.from_pretrained(
@@ -214,6 +219,7 @@ class OscarProjectorEncoder(Encoder):
         self._device = torch.device(device)
         
         disable_transformers_allocator_warmup()
+        disable_resume_download_passthrough()
         device_map = device if device != "cpu" else "cpu"
         
         self._oscar_model = AutoModel.from_pretrained(

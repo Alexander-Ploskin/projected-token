@@ -61,11 +61,11 @@ run_one() {
   return 0
 }
 
-run_one "E1" "configs/training/e1_5ep_beir5.yaml" "stage_b_e1_5ep_beir5" "0,3,4" "cuda:0" "cuda:1" "cuda:1" "cuda:2"
-run_one "E2" "configs/training/e2_5ep_beir5.yaml" "stage_b_e2_5ep_beir5" "0,3,4" "cuda:0" "cuda:1" "cuda:1" "cuda:2"
+run_one "E1" "configs/training/e1_5ep_beir5.yaml" "stage_b_e1_5ep_beir5" "0,1,2,3" "cuda:0" "cuda:1" "cuda:2" "cuda:3"
+run_one "E2" "configs/training/e2_5ep_beir5.yaml" "stage_b_e2_5ep_beir5" "0,1,2,3" "cuda:0" "cuda:1" "cuda:2" "cuda:3"
 
 # E3/E4 require candidate H5 bundle; expected to fail fast if absent.
-run_one "E3" "configs/training/e3_5ep_beir5.yaml" "stage_b_e3_5ep_beir5" "0,3,4" "cuda:0" "cuda:1" "cuda:1" "cuda:2"
-run_one "E4" "configs/training/e4_5ep_beir5.yaml" "stage_b_e4_5ep_beir5" "0,3,4" "cuda:0" "cuda:1" "cuda:1" "cuda:2"
+run_one "E3" "configs/training/e3_5ep_beir5.yaml" "stage_b_e3_5ep_beir5" "0,1,2,3" "cuda:0" "cuda:1" "cuda:2" "cuda:3"
+run_one "E4" "configs/training/e4_5ep_beir5.yaml" "stage_b_e4_5ep_beir5" "0,1,2,3" "cuda:0" "cuda:1" "cuda:2" "cuda:3"
 
 echo "[SEQ][SUCCESS] all runs finished"
