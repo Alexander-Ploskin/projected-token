@@ -434,6 +434,8 @@ class QueryDistillationTrainer:
             if hasattr(self, "train_loader") and hasattr(self, "gradient_accumulation_steps"):
                 epochs = self.projector_config.get("epochs", 1)
                 self.max_steps = int(epochs * len(self.train_loader) / self.gradient_accumulation_steps)
+                if self.resume_step > 0:
+                    self.max_steps += self.resume_step
                 print(f"[schedule] auto-calculated max_steps={self.max_steps} from {epochs} epochs", flush=True)
 
         if self.max_steps <= 0 or self.scheduler_name in {"legacy", "none"}:
@@ -1318,6 +1320,7 @@ class QueryDistillationTrainer:
         self.writer.flush()
 
     def train(self, num_epochs: int, val_every_n_steps: int, early_stopping_patience: int = 0) -> None:
+        self.projector_config["epochs"] = num_epochs
         print(f"\n{'=' * 60}")
         target = f"{self.max_steps} steps" if self.max_steps > 0 else f"{num_epochs} epochs"
         print(f"Starting query distillation training for {target}")
@@ -1345,7 +1348,13 @@ class QueryDistillationTrainer:
         validations_without_improvement = 0
         self.optimizer.zero_grad(set_to_none=True)
         reached_max_steps = False
+        if self.max_steps > 0 and global_step >= self.max_steps:
+            reached_max_steps = True
+            print(f"[schedule] already reached max_steps={self.max_steps} at step={global_step} before loop", flush=True)
+
         for epoch in range(1, num_epochs + 1):
+            if reached_max_steps:
+                break
             self.projector.train()
             pbar = tqdm(self.train_loader, desc=f"Epoch {epoch}")
             for batch in pbar:
@@ -1357,8 +1366,7 @@ class QueryDistillationTrainer:
                 grad_norm = float("nan")
                 if should_step:
                     global_step += 1
-                    if self.max_steps > 0:
-                        self._step_lr(global_step)
+                    self._step_lr(global_step)
                     grad_norm = torch.nn.utils.clip_grad_norm_(self.projector.parameters(), max_norm=1.0).item()
                     self.optimizer.step()
                     self.optimizer.zero_grad(set_to_none=True)
