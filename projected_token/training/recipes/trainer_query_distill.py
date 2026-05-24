@@ -460,13 +460,19 @@ class QueryDistillationTrainer:
         weights = np.zeros(len(dataset.index_map), dtype=np.float64)
         source_counts = collections.Counter()
         unknown_sources: set[str] = set()
+        
         for idx, (fi, _row) in enumerate(dataset.index_map):
             source = dataset.file_sources[fi]
             source_counts[source] += 1
+            
+        for idx, (fi, _row) in enumerate(dataset.index_map):
+            source = dataset.file_sources[fi]
             if source in sampling_weights:
-                weights[idx] = sampling_weights[source]
+                # Weight per sample = target_fraction / num_samples_in_source
+                weights[idx] = sampling_weights[source] / source_counts[source]
             else:
                 unknown_sources.add(source)
+                
         if np.all(weights == 0):
             print(
                 f"[sampling] no dataset_sampling_weights matched sources={sorted(source_counts.keys())}; falling back to shuffle",

@@ -122,7 +122,7 @@ class MEMProjector(BaseMEMProjector):
 
         self.mlp = nn.Sequential(*layers)
 
-    def forward(self, mem_hiddens: torch.Tensor) -> torch.Tensor:
+    def forward(self, mem_hiddens: torch.Tensor, mode: str = "doc") -> torch.Tensor:
         pooled = self.pool(mem_hiddens)
         embeddings = self.mlp(pooled)
         embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=-1)
