@@ -554,7 +554,13 @@ class QueryDistillationTrainer:
         ).mean()
 
         labels = torch.argmax(teacher_scores, dim=-1)
-        infonce_loss = F.cross_entropy(student_logits, labels)
+        
+        # Global in-batch InfoNCE across ALL candidates in the batch
+        B, K, D = cand.shape
+        flat_cand = cand.view(B * K, D)
+        global_logits = torch.matmul(q, flat_cand.T) / max(self.temperature, 1e-6)
+        global_labels = torch.arange(B, device=q.device) * K + labels
+        infonce_loss = F.cross_entropy(global_logits, global_labels)
         positive_scores = student_scores.gather(1, labels.unsqueeze(1)).squeeze(1)
         negative_mask = torch.ones_like(student_scores, dtype=torch.bool)
         negative_mask.scatter_(1, labels.unsqueeze(1), False)
