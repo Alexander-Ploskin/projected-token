@@ -1,5 +1,5 @@
 recipe: query_distill
-run_id: e9-flatten-kl-4096
+run_id: e11-pertoken-gated
 run_base_dir: artifacts/query_distill_runs
 oscar_model: naver/oscar-qwen2-7B
 teacher_embeddings:
@@ -10,32 +10,32 @@ teacher_embeddings:
   - artifacts/teacher-embeddings/query-doc-bge-base-candidates/quora-train-hard.h5
   - artifacts/teacher-embeddings/query-doc-bge-base-full/scifact-train-hard-augmented.h5
 embed_dim: 768
-pooler: flatten
-dropout: 0.0
-projector_hidden_dim: 4096
+pooler: per_token_gated
+projector_hidden_dim: 1024
+dropout: 0.15
 num_layers: 2
 batch_size: 64
 gradient_accumulation_steps: 1
 lr: 2.0e-5
 min_lr: 1.0e-6
 epochs: 5
-warmup_steps: 1000
+warmup_steps: 300
 scheduler: cosine
 stage1_steps: 1500
-stage1_query_mse_weight: 0.5
-stage1_doc_mse_weight: 0.5
-stage1_negative_mse_weight: 0.1
+stage1_query_mse_weight: 1.0
+stage1_doc_mse_weight: 1.0
+stage1_negative_mse_weight: 0.0
 stage2_query_mse_weight: 1.0
 stage2_doc_mse_weight: 1.0
-stage2_negative_mse_weight: 0.5
+stage2_negative_mse_weight: 0.3
 stage2_teacher_listwise_kl_weight: 0.3
-stage2_ranking_weight: 0.05
-stage2_infonce_weight: 0.0
+stage2_ranking_weight: 0.02
+stage2_infonce_weight: 0.05
 query_mse_weight: 1.0
 doc_mse_weight: 1.0
-negative_mse_weight: 0.5
-ranking_weight: 0.05
-infonce_weight: 0.0
+negative_mse_weight: 0.3
+ranking_weight: 0.02
+infonce_weight: 0.05
 temperature: 0.07
 margin: 0.15
 val_split: 0.02
@@ -53,11 +53,11 @@ beir_full_eval_every: 0
 beir_eval_at_epoch_end_only: true
 selection_metric: beir_full_ndcg@10
 dataset_sampling_weights:
-  scifact: 0.18
-  trec-covid: 0.18
-  fiqa: 0.17
-  nfcorpus: 0.15
-  arguana: 0.12
-  msmarco: 0.15
-  quora: 0.05
+  msmarco: 0.85
+  scifact: 0.03
+  trec-covid: 0.03
+  fiqa: 0.03
+  nfcorpus: 0.02
+  arguana: 0.02
+  quora: 0.02
 device: cuda:0

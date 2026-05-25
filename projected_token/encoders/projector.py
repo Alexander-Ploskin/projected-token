@@ -129,6 +129,49 @@ class MEMProjector(BaseMEMProjector):
         return embeddings
 
 
+class MEMProjectorGated(nn.Module):
+    """Per-token projection + dynamic self-gating over OSCAR memory tokens."""
+
+    def __init__(
+        self,
+        in_features: int = 28672,
+        hidden_dim: int = 1024,
+        out_dim: int = 768,
+        dropout: float = 0.15,
+        n_tokens: int = 8,
+    ):
+        super().__init__()
+        self.n_tokens = n_tokens
+        self.token_dim = in_features // n_tokens
+
+        self.token_proj = nn.Linear(self.token_dim, hidden_dim)
+        self.gate = nn.Linear(hidden_dim, 1, bias=False)
+        self.mlp = nn.Sequential(
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, out_dim),
+            nn.LayerNorm(out_dim),
+        )
+        self._init_weights()
+
+    def _init_weights(self) -> None:
+        nn.init.xavier_uniform_(self.token_proj.weight)
+        nn.init.zeros_(self.token_proj.bias)
+        nn.init.xavier_uniform_(self.gate.weight)
+
+    def forward(self, mem_hiddens: torch.Tensor, mode: str = "doc") -> torch.Tensor:
+        if mem_hiddens.dim() == 3:
+            x = mem_hiddens.view(mem_hiddens.size(0), -1)
+        else:
+            x = mem_hiddens
+        x = x.view(-1, self.n_tokens, self.token_dim)
+        h = torch.relu(self.token_proj(x))
+        gates = torch.softmax(self.gate(h), dim=1)
+        pooled = (h * gates).sum(dim=1)
+        embeddings = self.mlp(pooled)
+        return F.normalize(embeddings, p=2, dim=-1)
+
+
 class LoRAMEMProjector(BaseMEMProjector):
     """LoRA проектор - MLP с LoRA адаптером.
 

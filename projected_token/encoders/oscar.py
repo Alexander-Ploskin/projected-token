@@ -4,7 +4,7 @@ from pathlib import Path
 from transformers import AutoModel
 
 from projected_token.encoders import Encoder
-from projected_token.encoders.projector import MEMProjector, DistillationProjector, DualHeadMEMProjector, TokenAwareDualProjector
+from projected_token.encoders.projector import MEMProjector, MEMProjectorGated, DistillationProjector, DualHeadMEMProjector, TokenAwareDualProjector
 from projected_token.oscar_runtime import (
     disable_resume_download_passthrough,
     disable_transformers_allocator_warmup,
@@ -274,26 +274,33 @@ class OscarProjectorEncoder(Encoder):
         use_distillation = False
         use_token_dual = False
         use_dual_head = False
+        use_per_token_gated = pooler == "per_token_gated"
         training_objective = checkpoint_config.get("training_objective") if checkpoint_config else None
         projector_type = checkpoint_config.get("projector_type") if checkpoint_config else None
         if projector_type == "token_dual":
             use_token_dual = True
         if projector_type == "dual_head":
             use_dual_head = True
+        if checkpoint_config and checkpoint_config.get("pooler") == "per_token_gated":
+            use_per_token_gated = True
         if training_objective == "query_doc_bge_distill":
             use_distillation = False
         elif checkpoint is not None and "model_state_dict" in checkpoint:
             model_state = checkpoint["model_state_dict"]
-            has_distill_signature = "mlp.1.weight" in model_state and "mlp.4.weight" not in model_state
-            has_mem_signature = "mlp.4.weight" in model_state
-            if has_distill_signature:
-                use_distillation = True
-            elif has_mem_signature:
+            if "token_proj.weight" in model_state and "gate.weight" in model_state:
+                use_per_token_gated = True
                 use_distillation = False
             else:
-                use_distillation = oscar_hidden_dim is not None
+                has_distill_signature = "mlp.1.weight" in model_state and "mlp.4.weight" not in model_state
+                has_mem_signature = "mlp.4.weight" in model_state
+                if has_distill_signature:
+                    use_distillation = True
+                elif has_mem_signature:
+                    use_distillation = False
+                else:
+                    use_distillation = oscar_hidden_dim is not None
         else:
-            use_distillation = oscar_hidden_dim is not None
+            use_distillation = oscar_hidden_dim is not None and not use_per_token_gated
         
         if use_token_dual:
             print("Using TokenAwareDualProjector")
@@ -319,6 +326,15 @@ class OscarProjectorEncoder(Encoder):
                 trunk_layers=1,
                 head_layers=max(1, int(num_layers)),
                 dropout=dropout,
+            ).to(device=device, dtype=torch.bfloat16)
+        elif use_per_token_gated:
+            print("Using MEMProjectorGated")
+            self._projector = MEMProjectorGated(
+                in_features=hidden_size * 8,
+                hidden_dim=projector_hidden_dim or 1024,
+                out_dim=embed_dim,
+                dropout=dropout,
+                n_tokens=8,
             ).to(device=device, dtype=torch.bfloat16)
         elif use_distillation:
             print(f"Using DistillationProjector (oscar_hidden_dim={oscar_hidden_dim})")
@@ -349,7 +365,19 @@ class OscarProjectorEncoder(Encoder):
         self._embed_dim = embed_dim
         self._oscar_model_name = oscar_model_name
         self._projector_path = projector_path
-        self._projector_type = "token_dual" if use_token_dual else ("dual_head" if use_dual_head else ("distillation" if use_distillation else "mem"))
+        self._projector_type = (
+            "token_dual"
+            if use_token_dual
+            else (
+                "dual_head"
+                if use_dual_head
+                else (
+                    "per_token_gated"
+                    if use_per_token_gated
+                    else ("distillation" if use_distillation else "mem")
+                )
+            )
+        )
     
     def _aggregate(self, tensor: torch.Tensor) -> torch.Tensor:
         """Агрегация тензора [batch, num_tokens, hidden] -> [batch, hidden]"""

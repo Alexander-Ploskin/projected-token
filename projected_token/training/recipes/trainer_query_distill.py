@@ -27,7 +27,7 @@ from transformers import AutoModel
 
 from projected_token.artifacts import write_config_lock
 from projected_token.config import load_yaml
-from projected_token.encoders.projector import MEMProjector, DualHeadMEMProjector, TokenAwareDualProjector
+from projected_token.encoders.projector import MEMProjector, MEMProjectorGated, DualHeadMEMProjector, TokenAwareDualProjector
 from projected_token.retrieval.beir import evaluate_beir
 from projected_token.oscar_runtime import (
     disable_resume_download_passthrough,
@@ -206,6 +206,7 @@ class QueryDistillationTrainer:
         beir_mini_eval_every: int = 0,
         beir_full_eval_config: str | None = None,
         beir_full_eval_every: int = 0,
+        beir_eval_at_epoch_end_only: bool = False,
         selection_metric: str = "beir_proxy_ndcg@10",
         dataset_sampling_weights: dict[str, float] | None = None,
         resume_checkpoint: str | None = None,
@@ -252,6 +253,7 @@ class QueryDistillationTrainer:
         self.beir_mini_eval_every = int(beir_mini_eval_every)
         self.beir_full_eval_config = str(beir_full_eval_config) if beir_full_eval_config else None
         self.beir_full_eval_every = int(beir_full_eval_every)
+        self.beir_eval_at_epoch_end_only = bool(beir_eval_at_epoch_end_only)
         self.selection_metric = str(selection_metric)
         self.dataset_sampling_weights = {str(k): float(v) for k, v in (dataset_sampling_weights or {}).items()}
         self.resume_checkpoint = Path(resume_checkpoint) if resume_checkpoint else None
@@ -329,6 +331,14 @@ class QueryDistillationTrainer:
                 head_layers=max(1, int(num_layers)),
                 dropout=dropout,
             ).to(device=self.device, dtype=torch.bfloat16)
+        elif pooler == "per_token_gated":
+            self.projector = MEMProjectorGated(
+                in_features=hidden_size * 8,
+                hidden_dim=projector_hidden_dim,
+                out_dim=embed_dim,
+                dropout=dropout,
+                n_tokens=8,
+            ).to(device=self.device, dtype=torch.bfloat16)
         else:
             self.projector = MEMProjector(
                 hidden_dim=hidden_size,
@@ -374,6 +384,7 @@ class QueryDistillationTrainer:
             "beir_mini_eval_every": self.beir_mini_eval_every,
             "beir_full_eval_config": self.beir_full_eval_config,
             "beir_full_eval_every": self.beir_full_eval_every,
+            "beir_eval_at_epoch_end_only": self.beir_eval_at_epoch_end_only,
         }
         self._beir_probe_cases = self._load_beir_probe_cases()
         self.load_checkpoint()
@@ -589,7 +600,10 @@ class QueryDistillationTrainer:
 
         current_step = int(getattr(self, "_current_step", 0))
         if self.stage1_steps > 0 and current_step < self.stage1_steps:
-            total = 0.4 * q_mse + 0.2 * F.relu(1.0 - positive_scores).mean() + 0.4 * teacher_score_kl
+            total = (
+                self.stage1_query_mse_weight * q_mse
+                + self.stage1_doc_mse_weight * doc_mse
+            )
             loss_stage = "stage1"
         else:
             total = (
@@ -739,13 +753,20 @@ class QueryDistillationTrainer:
             out[f"{key}_batch_min"] = float(arr.min())
             out[f"{key}_batch_max"] = float(arr.max())
         out.update(self.run_beir_probe(step))
+        allow_step_scheduled_beir = not self.beir_eval_at_epoch_end_only
         should_run_mini = force_mini_eval or (
-            self.beir_mini_eval_every > 0 and step > 0 and step % self.beir_mini_eval_every == 0
+            allow_step_scheduled_beir
+            and self.beir_mini_eval_every > 0
+            and step > 0
+            and step % self.beir_mini_eval_every == 0
         )
         if should_run_mini:
             out.update(self.run_beir_eval(step, self.beir_mini_eval_config, "beir_mini"))
         should_run_full = force_full_eval or (
-            self.beir_full_eval_every > 0 and step > 0 and step % self.beir_full_eval_every == 0
+            allow_step_scheduled_beir
+            and self.beir_full_eval_every > 0
+            and step > 0
+            and step % self.beir_full_eval_every == 0
         )
         if should_run_full:
             out.update(self.run_beir_eval(step, self.beir_full_eval_config, "beir_full"))
@@ -1340,6 +1361,8 @@ class QueryDistillationTrainer:
         print(f"Validation every {val_every_n_steps} steps")
         print(f"Gradient accumulation steps: {self.gradient_accumulation_steps}")
         print(f"Selection metric: {self.selection_metric}")
+        if self.beir_eval_at_epoch_end_only:
+            print("BEIR mini/full eval (scifact/nfcorpus/arguana): epoch end only")
         if early_stopping_patience > 0:
             print(f"Early stopping patience: {early_stopping_patience} validations")
         print(f"{'=' * 60}\n")
@@ -1425,6 +1448,7 @@ class QueryDistillationTrainer:
                     self.projector.train()
                 elif (
                     should_step
+                    and not self.beir_eval_at_epoch_end_only
                     and self.beir_mini_eval_every > 0
                     and global_step > 0
                     and global_step % self.beir_mini_eval_every == 0
@@ -1507,6 +1531,7 @@ def main() -> None:
     parser.add_argument("--beir-mini-eval-every", type=int, default=0)
     parser.add_argument("--beir-full-eval-config", default=None)
     parser.add_argument("--beir-full-eval-every", type=int, default=0)
+    parser.add_argument("--beir-eval-at-epoch-end-only", action="store_true")
     parser.add_argument("--selection-metric", default="beir_proxy_ndcg@10")
     parser.add_argument("--dataset-sampling-weights", default=None)
     parser.add_argument("--resume-checkpoint", default=None)
@@ -1572,6 +1597,7 @@ def main() -> None:
         beir_mini_eval_every=args.beir_mini_eval_every,
         beir_full_eval_config=args.beir_full_eval_config,
         beir_full_eval_every=args.beir_full_eval_every,
+        beir_eval_at_epoch_end_only=args.beir_eval_at_epoch_end_only,
         selection_metric=args.selection_metric,
         dataset_sampling_weights=json.loads(args.dataset_sampling_weights) if args.dataset_sampling_weights else None,
         resume_checkpoint=args.resume_checkpoint,
