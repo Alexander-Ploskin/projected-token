@@ -1,0 +1,12 @@
+datasets:
+  - name: scifact-dev
+    path: /data/beir/scifact
+split: test
+top_k: 100
+metrics:
+  - mrr@10
+  - ndcg@10
+  - recall@10
+notes:
+  - "Proxy selection config for query_distill full design."
+  - "Uses scifact dev only; test split is reserved for final evaluation."

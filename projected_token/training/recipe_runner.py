@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,7 @@ ARGPARSE_RECIPES = {
     "msmarco": "projected_token.training.recipes.trainer_msmarco",
     "msmarco_v2": "projected_token.training.recipes.trainer_msmarco_v2",
     "distill": "projected_token.training.recipes.trainer_distill",
+    "query_distill": "projected_token.training.recipes.trainer_query_distill",
     "hotpot_distill": "projected_token.training.recipes.trainer_hotpot_distill",
 }
 
@@ -34,7 +36,7 @@ def _config_to_argv(config: dict[str, Any]) -> list[str]:
     if "cli_args" in config:
         return [str(v) for v in config["cli_args"]]
     args: list[str] = []
-    skip_keys = {"recipe", "run_root", "metrics_dir", "plots_dir"}
+    skip_keys = {"recipe", "run_base_dir", "run_root", "metrics_dir", "plots_dir"}
     for key, value in config.items():
         if key in skip_keys or value is None:
             continue
@@ -45,6 +47,8 @@ def _config_to_argv(config: dict[str, Any]) -> list[str]:
         elif isinstance(value, list):
             args.append(flag)
             args.extend(str(v) for v in value)
+        elif isinstance(value, dict):
+            args.extend([flag, json.dumps(value, ensure_ascii=False)])
         else:
             args.extend([flag, str(value)])
     return args
@@ -55,6 +59,7 @@ def _prepare_run_layout(config: dict[str, Any], recipe: str, config_path: str | 
     run_id = config.get("run_id")
     layout = create_run_layout(
         experiment_name=f"{recipe}-{config_name}",
+        base_dir=config.get("run_base_dir", "artifacts/runs"),
         run_id=run_id,
     )
     config["run_root"] = str(layout.root)

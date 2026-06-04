@@ -1,0 +1,16 @@
+datasets:
+  - name: scifact-dev
+    path: /data/beir/scifact
+  - name: nfcorpus
+    path: /data/beir/nfcorpus
+  - name: fiqa-2018
+    path: /data/beir/fiqa
+split: test
+top_k: 100
+metrics:
+  - mrr@10
+  - ndcg@10
+  - recall@10
+notes:
+  - "Multi-dataset proxy for query_distill selection."
+  - "SciFact dev remains included; nfcorpus and fiqa added for stability."

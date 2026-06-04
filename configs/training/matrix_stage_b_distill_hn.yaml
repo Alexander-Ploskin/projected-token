@@ -1,0 +1,6 @@
+configs:
+  - configs/training/stage_b_distill_e5_base_hn.yaml
+  - configs/training/stage_b_distill_bge_base_hn.yaml
+  - configs/training/stage_b_distill_e5_large_hn.yaml
+summary_output: artifacts/results/matrix/stage_b_distill_hn_summary.json
+

@@ -1,0 +1,6 @@
+configs:
+  - configs/training/stage_b_distill_e5_base.yaml
+  - configs/training/stage_b_distill_e5_base_retrieval_aware.yaml
+  - configs/training/stage_b_distill_bge_base_retrieval_aware.yaml
+summary_output: artifacts/results/matrix/stage_b_retrieval_ablation_data_summary.json
+

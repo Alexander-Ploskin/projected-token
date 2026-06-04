@@ -1,0 +1,38 @@
+recipe: query_distill
+run_id: stage-b-query-distill-bge-base-flatten-beir-ablation-current-1k
+run_base_dir: artifacts/query_distill_runs
+oscar_model: naver/oscar-qwen2-7B
+teacher_embeddings:
+  - artifacts/teacher-embeddings/query-doc-bge-base-combined-hard/scifact-test-hybrid.h5
+  - artifacts/teacher-embeddings/query-doc-bge-base-combined-hard/nfcorpus-train-hybrid.h5
+  - artifacts/teacher-embeddings/query-doc-bge-base-combined-hard/fiqa-train-bge-dense.h5
+embed_dim: 768
+pooler: flatten
+dropout: 0.0
+projector_hidden_dim: 8192
+num_layers: 2
+batch_size: 16
+gradient_accumulation_steps: 4
+lr: 2.0e-5
+max_steps: 1000
+warmup_steps: 200
+min_lr: 1.0e-6
+scheduler: cosine
+query_mse_weight: 1.0
+doc_mse_weight: 1.0
+negative_mse_weight: 0.5
+ranking_weight: 0.1
+infonce_weight: 0.02
+temperature: 0.07
+margin: 0.15
+selection_metric: beir_proxy_ndcg@10
+beir_probe_config: configs/retrieval/beir3_stage_b_bge_base_leaf.yaml
+beir_probe_samples: 20
+beir_probe_samples_per_dataset: 100
+beir_probe_negatives: 200
+beir_probe_batch_size: 8
+epochs: 9999
+val_split: 0.02
+val_every: 250
+early_stopping_patience: 5
+device: cuda:0

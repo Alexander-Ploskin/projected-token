@@ -1,0 +1,31 @@
+recipe: distill
+run_id: stage-b-distill-e5-large-hn
+oscar_model: naver/oscar-qwen2-7B
+teacher_embeddings:
+  - data/teacher-embeddings/e5-large-v2_teacher_embeddings_mixed.h5
+embed_dim: 768
+pooler: mean
+dropout: 0.0
+projector_hidden_dim: 8192
+projector_type: mem
+num_layers: 2
+batch_size: 192
+lr: 8.0e-5
+infonce_weight: 1.0
+margin_mse_weight: 0.1
+mse_weight: 0.1
+temperature: 0.02
+margin: 0.1
+hard_negative_weight: 0.2
+hard_negative_margin: 0.05
+selection_metric: ndcg@10
+proxy_eval_every_n_steps: 0
+proxy_eval_config:
+async_validation: true
+async_validation_device: cuda:2
+async_validation_max_pending: 1
+epochs: 30
+val_split: 0.05
+val_every: 1000
+early_stopping_patience: 0
+device: cuda:0

@@ -1,0 +1,34 @@
+encoder:
+  name: oscar_projector
+  kwargs:
+    oscar_model_name: naver/oscar-qwen2-7B
+    projector_path: artifacts/leaf_runs/stage-b-distill-bge-base-leaf/checkpoints/best_model.pt
+    device: cuda:0
+    embed_dim: 768
+    pooler: mean
+    num_layers: 2
+    dropout: 0.0
+index:
+  metric: ip
+  normalize: true
+  batch_size: 32
+split: test
+search_k: 100
+datasets:
+  - name: scifact
+    path: data/beir/scifact
+  - name: nfcorpus
+    path: data/beir/nfcorpus
+  - name: fiqa-2018
+    path: data/beir/fiqa
+  - name: arguana
+    path: ../arguana
+  - name: trec-covid
+    path: ../trec-covid
+  - name: quora
+    path: ../quora
+metrics:
+  top_k: [1, 3, 5, 10, 20]
+  output_path: artifacts/results/retrieval/beir3_stage_b_bge_base_leaf_summary.json
+  output_csv_path: artifacts/results/retrieval/beir3_stage_b_bge_base_leaf_summary.csv
+  run_id: stage_b_bge_base_leaf

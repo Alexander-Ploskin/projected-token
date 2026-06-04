@@ -76,7 +76,12 @@ def evaluate_retrieval(config_path: str | Path) -> dict[str, Any]:
     encoder = build_encoder(config["encoder"])
     queries = [case["query"] for case in cases]
     top_k = [int(k) for k in metric_cfg.get("top_k", [1, 3, 5, 10, 20])]
-    query_embeddings = _encode_batches(encoder, queries, int(index_cfg.get("batch_size", 32)))
+    query_embeddings = _encode_batches(
+        encoder,
+        queries,
+        int(index_cfg.get("batch_size", 32)),
+        questions=queries,
+    )
     query_embeddings = l2_normalize(query_embeddings)
     _, indices = index.search(query_embeddings.astype(np.float32), max(top_k))
     ranking_cases = [(case["relevant_docs"], indices[i].tolist()) for i, case in enumerate(cases)]

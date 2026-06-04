@@ -1,0 +1,25 @@
+{
+  "run_dir": "/home/a-ploskin/repos/ms-thesis/projected-token/artifacts/query_distill_runs/e11-pertoken-gated",
+  "run_label": "E11 per_token_gated",
+  "stage1_steps": 1500,
+  "n_val_points": 14,
+  "n_train_steps": 5312,
+  "outputs": [
+    "artifacts/plots/e11-pertoken-gated/training_validation/training_loss_components.png",
+    "artifacts/plots/e11-pertoken-gated/training_validation/training_loss_components.pdf",
+    "artifacts/plots/e11-pertoken-gated/training_validation/training_distillation_signals.png",
+    "artifacts/plots/e11-pertoken-gated/training_validation/training_distillation_signals.pdf",
+    "artifacts/plots/e11-pertoken-gated/training_validation/training_optimizer.png",
+    "artifacts/plots/e11-pertoken-gated/training_validation/training_optimizer.pdf",
+    "artifacts/plots/e11-pertoken-gated/training_validation/validation_loss_components.png",
+    "artifacts/plots/e11-pertoken-gated/training_validation/validation_loss_components.pdf",
+    "artifacts/plots/e11-pertoken-gated/training_validation/validation_retrieval_diagnostics.png",
+    "artifacts/plots/e11-pertoken-gated/training_validation/validation_retrieval_diagnostics.pdf",
+    "artifacts/plots/e11-pertoken-gated/training_validation/validation_beir_probe.png",
+    "artifacts/plots/e11-pertoken-gated/training_validation/validation_beir_probe.pdf",
+    "artifacts/plots/e11-pertoken-gated/training_validation/validation_beir_full_epoch_end.png",
+    "artifacts/plots/e11-pertoken-gated/training_validation/validation_beir_full_epoch_end.pdf",
+    "artifacts/plots/e11-pertoken-gated/training_validation/train_vs_validation_loss_total.png",
+    "artifacts/plots/e11-pertoken-gated/training_validation/train_vs_validation_loss_total.pdf"
+  ]
+}

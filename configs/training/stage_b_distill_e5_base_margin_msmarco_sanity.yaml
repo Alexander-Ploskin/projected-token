@@ -1,0 +1,28 @@
+recipe: distill
+run_id: stage-b-distill-e5-base-margin-msmarco-sanity
+oscar_model: naver/oscar-qwen2-7B
+teacher_embeddings:
+  - data/teacher-embeddings/e5-base-v2_teacher_embeddings_mixed.h5
+embed_dim: 768
+pooler: mean
+dropout: 0.0
+projector_hidden_dim: 8192
+projector_type: mem
+num_layers: 2
+batch_size: 64
+lr: 1.0e-4
+infonce_weight: 0.0
+margin_mse_weight: 1.0
+mse_weight: 0.0
+temperature: 0.02
+margin: 0.1
+hard_negative_weight: 0.0
+hard_negative_margin: 0.05
+selection_metric: ndcg@10
+proxy_eval_every_n_steps: 0
+proxy_eval_config:
+beir_probe_config: configs/retrieval/beir3_proxy_stage_b.yaml
+beir_probe_samples: 20
+epochs: 5
+val_split: 0.05
+device: cuda:0

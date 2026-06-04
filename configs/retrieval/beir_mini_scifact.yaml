@@ -1,0 +1,24 @@
+encoder:
+  name: oscar_projector
+  kwargs:
+    oscar_model_name: naver/oscar-qwen2-7B
+    projector_path: artifacts/query_distill_runs/checkpoints/best_model.pt
+    device: cuda:0
+    embed_dim: 768
+    pooler: flatten
+    num_layers: 2
+    dropout: 0.0
+index:
+  metric: ip
+  normalize: true
+  batch_size: 32
+split: test
+search_k: 100
+datasets:
+  - name: scifact
+    path: /data/beir/scifact
+metrics:
+  top_k: [1, 3, 5, 10, 20]
+  output_path: artifacts/results/retrieval/beir_mini_scifact/summary.json
+  output_csv_path: artifacts/results/retrieval/beir_mini_scifact/summary.csv
+  run_id: beir_mini_scifact

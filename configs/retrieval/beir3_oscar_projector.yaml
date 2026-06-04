@@ -21,6 +21,12 @@ datasets:
     path: data/beir/nfcorpus
   - name: fiqa-2018
     path: data/beir/fiqa
+  - name: arguana
+    path: ../arguana
+  - name: trec-covid
+    path: ../trec-covid
+  - name: quora
+    path: ../quora
 metrics:
   top_k: [1, 3, 5, 10, 20]
   output_path: artifacts/results/retrieval/beir3_summary.json

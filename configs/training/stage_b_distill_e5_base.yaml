@@ -2,7 +2,7 @@ recipe: distill
 run_id: stage-b-distill-e5-base
 oscar_model: naver/oscar-qwen2-7B
 teacher_embeddings:
-  - /data/teacher-embeddings/e5-base-v2_teacher_embeddings_msmarco_100k.h5
+  - data/teacher-embeddings/e5-base-v2_teacher_embeddings_mixed.h5
 embed_dim: 768
 pooler: mean
 dropout: 0.0

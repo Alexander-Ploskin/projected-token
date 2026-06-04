@@ -19,12 +19,46 @@ from projected_token.retrieval.metrics.ranking import aggregate_rankings
 
 def _encode_batches(encoder: Any, texts: list[str], batch_size: int) -> np.ndarray:
     chunks: list[np.ndarray] = []
-    for start in range(0, len(texts), batch_size):
+    total = len(texts)
+    if total == 0:
+        print("[beir] encode: no texts to process", flush=True)
+        return np.zeros((0, 0), dtype=np.float32)
+
+    total_batches = (total + batch_size - 1) // batch_size
+    for batch_idx, start in enumerate(range(0, total, batch_size), start=1):
         batch_texts = texts[start:start + batch_size]
         encoded = encoder.encode(batch_texts, None)
         if hasattr(encoded, "detach"):
             encoded = encoded.detach().cpu().numpy()
         chunks.append(np.asarray(encoded, dtype=np.float32))
+        processed = min(start + len(batch_texts), total)
+        print(
+            f"[beir] encode progress: {processed}/{total} texts "
+            f"({batch_idx}/{total_batches} batches)",
+            flush=True,
+        )
+    return np.concatenate(chunks, axis=0) if chunks else np.zeros((0, 0), dtype=np.float32)
+
+
+def _encode_query_batches(encoder: Any, queries: list[str], batch_size: int) -> np.ndarray:
+    chunks: list[np.ndarray] = []
+    total = len(queries)
+    if total == 0:
+        print("[beir] encode: no queries to process", flush=True)
+        return np.zeros((0, 0), dtype=np.float32)
+    total_batches = (total + batch_size - 1) // batch_size
+    for batch_idx, start in enumerate(range(0, total, batch_size), start=1):
+        batch_queries = queries[start:start + batch_size]
+        encoded = encoder.encode(batch_queries, batch_queries)
+        if hasattr(encoded, "detach"):
+            encoded = encoded.detach().cpu().numpy()
+        chunks.append(np.asarray(encoded, dtype=np.float32))
+        processed = min(start + len(batch_queries), total)
+        print(
+            f"[beir] query encode progress: {processed}/{total} queries "
+            f"({batch_idx}/{total_batches} batches)",
+            flush=True,
+        )
     return np.concatenate(chunks, axis=0) if chunks else np.zeros((0, 0), dtype=np.float32)
 
 
@@ -33,7 +67,12 @@ def _load_jsonl(path: Path) -> list[dict[str, Any]]:
         return [row for row in reader]
 
 
-def _load_beir_dataset(dataset_dir: Path, split: str = "test") -> tuple[list[str], list[str], list[str], dict[str, set[str]]]:
+def _load_beir_dataset(
+    dataset_dir: Path,
+    split: str = "test",
+    *,
+    max_queries: int | None = None,
+) -> tuple[list[str], list[str], list[str], list[str], dict[str, set[str]]]:
     corpus_rows = _load_jsonl(dataset_dir / "corpus.jsonl")
     query_rows = _load_jsonl(dataset_dir / "queries.jsonl")
 
@@ -42,6 +81,7 @@ def _load_beir_dataset(dataset_dir: Path, split: str = "test") -> tuple[list[str
         " ".join(part for part in [str(row.get("title", "")).strip(), str(row.get("text", "")).strip()] if part).strip()
         for row in corpus_rows
     ]
+
     query_ids = [str(row["_id"]) for row in query_rows]
     query_texts = [str(row.get("text", "")) for row in query_rows]
 
@@ -56,11 +96,31 @@ def _load_beir_dataset(dataset_dir: Path, split: str = "test") -> tuple[list[str
             if score <= 0:
                 continue
             relevant.setdefault(qid, set()).add(did)
+
+    if max_queries is not None and max_queries > 0:
+        limited_ids: list[str] = []
+        limited_texts: list[str] = []
+        for qid, qtext in zip(query_ids, query_texts):
+            if qid not in relevant:
+                continue
+            limited_ids.append(qid)
+            limited_texts.append(qtext)
+            if len(limited_ids) >= max_queries:
+                break
+        query_ids = limited_ids
+        query_texts = limited_texts
+        relevant = {qid: relevant[qid] for qid in query_ids if qid in relevant}
+
     return corpus_ids, corpus_texts, query_ids, query_texts, relevant
 
 
 def _encoder_fingerprint(encoder_cfg: dict[str, Any]) -> str:
-    payload = json.dumps(encoder_cfg, sort_keys=True, ensure_ascii=True)
+    cfg_copy = dict(encoder_cfg)
+    if "kwargs" in cfg_copy:
+        kwargs_copy = dict(cfg_copy["kwargs"])
+        kwargs_copy.pop("oscar_model_instance", None)
+        cfg_copy["kwargs"] = kwargs_copy
+    payload = json.dumps(cfg_copy, sort_keys=True, ensure_ascii=True)
     return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:10]
 
 
@@ -73,30 +133,42 @@ def evaluate_beir(config: dict[str, Any]) -> dict[str, Any]:
     top_k = [int(k) for k in metric_cfg.get("top_k", [1, 3, 5, 10, 20])]
     search_k = int(config.get("search_k", max(top_k)))
     batch_size = int(index_cfg.get("batch_size", 32))
+    max_queries_global = config.get("max_queries_per_dataset")
+    if max_queries_global is not None:
+        max_queries_global = int(max_queries_global)
 
     output_path = Path(metric_cfg.get("output_path", "artifacts/results/retrieval/beir3_summary.json"))
     output_csv_path = Path(metric_cfg.get("output_csv_path", output_path.with_suffix(".csv")))
     run_id = str(metric_cfg.get("run_id", output_path.parent.name))
-
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     encoder = build_encoder(encoder_cfg)
     encoder_fp = _encoder_fingerprint(encoder_cfg)
-
     per_dataset: dict[str, dict[str, float]] = {}
     metric_table_rows: list[dict[str, Any]] = []
 
     for item in datasets_cfg:
         dataset_name = str(item["name"])
         dataset_dir = Path(item["path"])
-        corpus_ids, corpus_texts, query_ids, query_texts, relevant_map = _load_beir_dataset(dataset_dir, split=split)
+        dataset_max_q = item.get("max_queries", max_queries_global)
+        print(f"[beir] dataset start: {dataset_name} ({dataset_dir})", flush=True)
+        corpus_ids, corpus_texts, query_ids, query_texts, relevant_map = _load_beir_dataset(
+            dataset_dir,
+            split=split,
+            max_queries=(int(dataset_max_q) if dataset_max_q is not None else None),
+        )
+        print(
+            f"[beir] loaded dataset {dataset_name}: "
+            f"corpus={len(corpus_texts)}, queries={len(query_texts)}",
+            flush=True,
+        )
 
         embeddings = _encode_batches(encoder, corpus_texts, batch_size=batch_size)
         if index_cfg.get("normalize", True):
             embeddings = l2_normalize(embeddings)
         index = create_faiss_index(embeddings, index_cfg.get("metric", "ip"))
 
-        query_embeddings = _encode_batches(encoder, query_texts, batch_size=batch_size)
+        query_embeddings = _encode_query_batches(encoder, query_texts, batch_size=batch_size)
         query_embeddings = l2_normalize(query_embeddings)
         _, indices = index.search(query_embeddings.astype(np.float32), search_k)
 
@@ -110,6 +182,11 @@ def evaluate_beir(config: dict[str, Any]) -> dict[str, Any]:
 
         metrics = aggregate_rankings(ranking_cases, top_k)
         per_dataset[dataset_name] = metrics
+        print(
+            f"[beir] dataset done: {dataset_name}, ndcg@10={metrics.get('ndcg@10', 0.0):.6f}, "
+            f"mrr@10={metrics.get('mrr@10', 0.0):.6f}",
+            flush=True,
+        )
 
         dataset_json = output_path.parent / f"{dataset_name}_metrics.json"
         dataset_csv = output_path.parent / f"{dataset_name}_metrics.csv"
@@ -147,6 +224,7 @@ def evaluate_beir(config: dict[str, Any]) -> dict[str, Any]:
         "datasets": [str(item["name"]) for item in datasets_cfg],
         "top_k": top_k,
         "search_k": search_k,
+        "max_queries_per_dataset": max_queries_global,
         "encoder_fingerprint": encoder_fp,
         "per_dataset": per_dataset,
         "average": avg_metrics,
@@ -174,3 +252,4 @@ def evaluate_beir(config: dict[str, Any]) -> dict[str, Any]:
         )
 
     return summary
+
