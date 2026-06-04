@@ -1,0 +1,57 @@
+{
+  "dataset": "Quora",
+  "n_pairs": 80,
+  "means": {
+    "bge_teacher": {
+      "match": 0.8482198715209961,
+      "random": 0.2884407937526703,
+      "hard": 0.6436185836791992,
+      "margin_random": 0.5597790479660034,
+      "margin_hard": 0.20460133254528046,
+      "rank_ok": 1.0
+    },
+    "e11_step0": {
+      "match": 0.9952858686447144,
+      "random": 0.9806758761405945,
+      "hard": 0.9895970225334167,
+      "margin_random": 0.014610079117119312,
+      "margin_hard": 0.00568882143124938,
+      "rank_ok": 1.0
+    },
+    "e11_after_stage1": {
+      "match": 0.9986156225204468,
+      "random": 0.9932118654251099,
+      "hard": 0.9966546893119812,
+      "margin_random": 0.00540383905172348,
+      "margin_hard": 0.001960933208465576,
+      "rank_ok": 1.0
+    },
+    "e11_best": {
+      "match": 0.8614158630371094,
+      "random": 0.15711817145347595,
+      "hard": 0.6354960203170776,
+      "margin_random": 0.7042977213859558,
+      "margin_hard": 0.22591981291770935,
+      "rank_ok": 1.0
+    }
+  },
+  "margin_match_minus_hard": {
+    "bge_teacher": 0.20460133254528046,
+    "e11_step0": 0.00568882143124938,
+    "e11_after_stage1": 0.001960933208465576,
+    "e11_best": 0.22591981291770935
+  },
+  "margin_match_minus_random": {
+    "bge_teacher": 0.5597790479660034,
+    "e11_step0": 0.014610079117119312,
+    "e11_after_stage1": 0.00540383905172348,
+    "e11_best": 0.7042977213859558
+  },
+  "fraction_margin_random_gt_0.15": {
+    "bge_teacher": 1.0,
+    "e11_step0": 0.0,
+    "e11_after_stage1": 0.0,
+    "e11_best": 0.9875
+  },
+  "main_plot": "artifacts/plots/e11-pertoken-gated/tsne_quora_probe/quora_margin_probe_grid.png"
+}

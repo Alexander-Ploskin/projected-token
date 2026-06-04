@@ -1,0 +1,24 @@
+encoder:
+  name: salesforce
+  kwargs:
+    model_name_or_path: Salesforce/SFR-Embedding-Mistral
+    device: cuda:0
+    trust_remote_code: true
+index:
+  metric: ip
+  normalize: true
+  batch_size: 32
+split: test
+search_k: 100
+datasets:
+  - name: arguana
+    path: data/beir/arguana
+  - name: trec-covid
+    path: data/beir/trec-covid
+  - name: quora
+    path: data/beir/quora
+metrics:
+  top_k: [1, 3, 5, 10, 20]
+  output_path: artifacts/results/retrieval/sfr_beir6_arguana_quora_trec/summary.json
+  output_csv_path: artifacts/results/retrieval/sfr_beir6_arguana_quora_trec/summary.csv
+  run_id: sfr_beir6_arguana_quora_trec

@@ -7,37 +7,52 @@ cd "$ROOT"
 CONTAINER="pt-exp-mgpu"
 OUT_DIR="/mnt/raid/a-ploskin/kilt_faiss_indexes/e11-pertoken-gated"
 PROJECTOR_PATH="artifacts/query_distill_runs/e11-pertoken-gated/checkpoints/best_model.pt"
-NUM_SHARDS=4
+NUM_SHARDS=3
+HF_TOKEN="${HF_TOKEN:-}"
+HF_ENV=""
+if [[ -n "${HF_TOKEN}" ]]; then
+  HF_ENV="HF_TOKEN=${HF_TOKEN} "
+fi
 
-echo "Stopping E11 training if running..."
-tmux kill-session -t e11_train 2>/dev/null || true
-docker exec "$CONTAINER" bash -lc 'kill $(pgrep -f "projected_token train --config configs/training/e11_pertoken_gated.yaml") 2>/dev/null || true'
-sleep 2
+start_shard() {
+  local SHARD_ID=$1
+  local GPUS=$2
+  docker exec -d -w /workspace/projected-token "$CONTAINER" bash -lc \
+    "CUDA_VISIBLE_DEVICES=${GPUS} ${HF_ENV}HF_HOME=/mnt/raid/a-ploskin/hf_cache \
+     nohup python3 -u scripts/build_kilt_index.py \
+       --shard-id ${SHARD_ID} --num-shards ${NUM_SHARDS} \
+       --output-dir ${OUT_DIR} --projector-path ${PROJECTOR_PATH} \
+       --compressor-device cuda:0 --decoder-device cuda:1 \
+       --batch-size 256 --checkpoint-every 500000 \
+       >> ${OUT_DIR}/shard_${SHARD_ID}.log 2>&1 &"
+  echo "  shard ${SHARD_ID} -> CUDA_VISIBLE_DEVICES=${GPUS} (compressor=cuda:0, decoder=cuda:1)"
+}
 
-echo "Creating output directory..."
+echo "Killing old KILT processes..."
+docker exec "$CONTAINER" bash -lc "pkill -9 -f '[b]uild_kilt_index.py' || true"
+sleep 3
 docker exec "$CONTAINER" mkdir -p "$OUT_DIR"
 
-echo "Killing old KILT shard sessions if any..."
-for i in 0 1 2 3; do
-  tmux kill-session -t "kilt_shard_${i}" 2>/dev/null || true
-done
-docker exec "$CONTAINER" bash -lc "pkill -f '[b]uild_kilt_index.py' || true"
-sleep 2
+echo "Starting KILT index (2 parallel + shard 2 queued)..."
+echo "PyTorch CUDA 0-3 = 3090 Ti | CUDA 4-5 = 2080 Ti (unused)"
 
-echo "Starting ${NUM_SHARDS} KILT index shards (1x 3090 Ti each)..."
-echo "Output: ${OUT_DIR}"
-echo "Projector: ${PROJECTOR_PATH}"
+# OSCAR needs 2x 3090 per worker; 4x 3090 available -> max 2 parallel
+start_shard 0 "0,1"
+start_shard 1 "2,3"
 
-GPUS=(0 3 4 5)
-for SHARD_ID in "${!GPUS[@]}"; do
-  GPU="${GPUS[$SHARD_ID]}"
-  tmux kill-session -t "kilt_shard_${SHARD_ID}" 2>/dev/null || true
-  tmux new-session -d -s "kilt_shard_${SHARD_ID}" \
-    "docker exec -w /workspace/projected-token ${CONTAINER} bash -lc 'CUDA_VISIBLE_DEVICES=${GPU} HF_TOKEN=?? HF_HOME=/mnt/raid/a-ploskin/hf_cache python3 scripts/build_kilt_index.py --shard-id ${SHARD_ID} --num-shards ${NUM_SHARDS} --output-dir ${OUT_DIR} --projector-path ${PROJECTOR_PATH} --compressor-device cuda:0 --decoder-device cuda:0 --batch-size 256' 2>&1 | tee ${OUT_DIR}/shard_${SHARD_ID}.log"
-  echo "  shard ${SHARD_ID} -> GPU ${GPU} (host tmux: kilt_shard_${SHARD_ID})"
-done
+# Shard 2 starts when shard 0 finishes
+nohup bash -c "
+  while docker exec ${CONTAINER} pgrep -f 'build_kilt_index.py --shard-id 0' >/dev/null 2>&1; do sleep 60; done
+  docker exec -d -w /workspace/projected-token ${CONTAINER} bash -lc \
+    \"CUDA_VISIBLE_DEVICES=0,1 ${HF_ENV}HF_HOME=/mnt/raid/a-ploskin/hf_cache \
+     nohup python3 -u scripts/build_kilt_index.py \
+       --shard-id 2 --num-shards ${NUM_SHARDS} \
+       --output-dir ${OUT_DIR} --projector-path ${PROJECTOR_PATH} \
+       --compressor-device cuda:0 --decoder-device cuda:1 \
+       --batch-size 256 --checkpoint-every 500000 \
+       >> ${OUT_DIR}/shard_2.log 2>&1 &\"
+" >/dev/null 2>&1 &
 
 echo ""
-echo "All ${NUM_SHARDS} KILT shards started."
+echo "Shards 0,1 running. Shard 2 auto-starts when shard 0 finishes."
 echo "Logs: ${OUT_DIR}/shard_*.log"
-echo "Monitor: tmux ls | grep kilt_shard"

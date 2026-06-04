@@ -1,0 +1,63 @@
+{
+  "dataset": "hotpotqa",
+  "num_queries": 7405,
+  "n_queries_scored": 7404,
+  "results_jsonl": "artifacts/results/retrieval/kilt_e11_hotpotqa_distractor_top100.jsonl",
+  "queries_path": "/home/a-ploskin/repos/ms-thesis/projected-token/data/hotpotqa/distractor/validation.parquet",
+  "passage_field": "document",
+  "top_k": [
+    1,
+    5,
+    10,
+    20,
+    50,
+    100
+  ],
+  "metrics": {
+    "recall@1": 0.01877363587250135,
+    "ndcg@1": 0.01877363587250135,
+    "recall@5": 0.058481901674770395,
+    "ndcg@5": 0.03852393085657758,
+    "recall@10": 0.0864397622906537,
+    "ndcg@10": 0.04731924847731928,
+    "recall@20": 0.12142085359265262,
+    "ndcg@20": 0.056513444998570674,
+    "recall@50": 0.16518098325229605,
+    "ndcg@50": 0.06589062921252765,
+    "recall@100": 0.20786061588330632,
+    "ndcg@100": 0.07499603958088046,
+    "mrr": 0.040373963708387584
+  },
+  "metrics_by_k": [
+    {
+      "k": 1,
+      "recall": 0.01877363587250135,
+      "ndcg": 0.01877363587250135
+    },
+    {
+      "k": 5,
+      "recall": 0.058481901674770395,
+      "ndcg": 0.03852393085657758
+    },
+    {
+      "k": 10,
+      "recall": 0.0864397622906537,
+      "ndcg": 0.04731924847731928
+    },
+    {
+      "k": 20,
+      "recall": 0.12142085359265262,
+      "ndcg": 0.056513444998570674
+    },
+    {
+      "k": 50,
+      "recall": 0.16518098325229605,
+      "ndcg": 0.06589062921252765
+    },
+    {
+      "k": 100,
+      "recall": 0.20786061588330632,
+      "ndcg": 0.07499603958088046
+    }
+  ]
+}
